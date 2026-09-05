@@ -114,6 +114,26 @@ def get_unique_session_path(user_id: int, phone: str) -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"sessions/user_{user_id}_{phone}_{timestamp}.session"
 
+# Сохранение профиля без использования FSM (для QR)
+def save_profile_direct(user_id: int, me, phone: str, session_path: str, client):
+    """Прямое сохранение профиля без FSM (для QR)"""
+    acc_info = {
+        "phone": phone,
+        "first_name": me.first_name,
+        "last_name": me.last_name or "",
+        "username": me.username or "нет",
+        "user_id": me.id,
+        "session_path": session_path,
+        "client": client
+    }
+    if user_id not in user_accounts:
+        user_accounts[user_id] = []
+    user_accounts[user_id].append(acc_info)
+    user_sessions[user_id] = user_sessions.get(user_id, [])
+    user_sessions[user_id].append(client)
+    save_accounts_data()
+    return acc_info
+
 @router.message(F.text == "👤 Профили")
 async def accounts_menu(message: Message, state: FSMContext):
     await state.set_state(AccountStates.main)
@@ -504,12 +524,16 @@ async def cancel_delete_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text, reply_markup=get_accounts_kb())
 
 # ============================================================
-# QR-ВХОД (исправленный)
+# QR-ВХОД (исправленный с сообщениями о загрузке)
 # ============================================================
 
 @router.callback_query(AccountStates.adding_phone, lambda c: c.data == "qr_login")
 async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+
+    # Отправляем сообщение о начале процесса
+    loading_msg = await callback.message.answer("⏳ Генерируем QR-код, пожалуйста, подождите...")
+
     user_id = callback.from_user.id
 
     if user_id in temp_data:
@@ -533,6 +557,7 @@ async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
         }
         await state.set_state(AccountStates.qr_code)
 
+        # Генерируем QR
         qr = qrcode.QRCode(border=1, box_size=10)
         qr.add_data(qr_login.url)
         qr.make(fit=True)
@@ -541,8 +566,10 @@ async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
         img.save(bio, format="PNG")
         bio.seek(0)
 
-        # Используем BufferedInputFile для отправки байтов
-        from aiogram.types import BufferedInputFile
+        # Удаляем сообщение о загрузке
+        await loading_msg.delete()
+
+        # Отправляем QR-код
         await callback.message.answer_photo(
             photo=BufferedInputFile(bio.getvalue(), filename="qr.png"),
             caption=(
@@ -565,6 +592,7 @@ async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
         qr_tasks[user_id] = asyncio.create_task(check_qr_login(user_id, callback.message))
 
     except Exception as e:
+        await loading_msg.delete()
         logger.error(f"Ошибка QR-логина: {e}")
         await callback.message.answer(f"❌ Ошибка: {str(e)}\nПопробуйте снова.")
 
@@ -584,6 +612,9 @@ async def qr_refresh_callback(callback: CallbackQuery, state: FSMContext):
         return
 
     try:
+        # Отправляем сообщение о перегенерации
+        await callback.message.answer("⏳ Перегенерируем QR-код...")
+
         qr_login.recreate()
         qr = qrcode.QRCode(border=1, box_size=10)
         qr.add_data(qr_login.url)
@@ -593,7 +624,6 @@ async def qr_refresh_callback(callback: CallbackQuery, state: FSMContext):
         img.save(bio, format="PNG")
         bio.seek(0)
 
-        from aiogram.types import BufferedInputFile
         await callback.message.edit_media(
             types.InputMediaPhoto(media=BufferedInputFile(bio.getvalue(), filename="qr.png")),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -643,20 +673,25 @@ async def check_qr_login(user_id: int, message: types.Message):
         me = await client.get_me()
         if user_id in qr_tasks and qr_tasks[user_id] != asyncio.current_task():
             qr_tasks[user_id].cancel()
-        await save_account_profile(
+
+        # Сохраняем профиль без использования FSM
+        save_profile_direct(
             user_id,
             me,
             me.phone,
-            client,
             data["session_path"],
-            message,
-            None
+            client
         )
         await message.answer("✅ Аккаунт успешно добавлен через QR-код!")
         if user_id in temp_data:
             del temp_data[user_id]
         if user_id in qr_tasks:
             del qr_tasks[user_id]
+        # Удаляем сообщение с QR (опционально, чтобы не висело)
+        try:
+            await message.delete()
+        except:
+            pass
 
     except asyncio.CancelledError:
         pass
