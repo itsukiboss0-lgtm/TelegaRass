@@ -36,11 +36,3 @@ class TariffStates(StatesGroup):
     main = State()
     choosing_duration = State()
     payment_stars = State()
-
-class AccountStates(StatesGroup):
-    main = State()
-    adding_phone = State()
-    waiting_code = State()
-    waiting_2fa_password = State()
-    deleting_confirm = State()
-    qr_code = State()  # 👈 НОВОЕ СОСТОЯНИЕ

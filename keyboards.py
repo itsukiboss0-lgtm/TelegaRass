@@ -290,6 +290,5 @@ def build_groups_inline(groups_list: list, page: int = 0, per_page: int = 9) -> 
         InlineKeyboardButton(text="✅ Сохранить", callback_data="save_groups"),
         InlineKeyboardButton(text="📌 Выбрать все", callback_data="select_all_groups")
     ]
-
     buttons.append(action_buttons)
     return InlineKeyboardMarkup(inline_keyboard=buttons)
