@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from io import BytesIO
 from aiogram import Router, F, types
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from telethon import TelegramClient
 from telethon.errors import (
@@ -41,7 +41,6 @@ user_accounts = {}
 temp_data = {}
 qr_tasks = {}
 
-
 def save_accounts_data():
     data = {"user_accounts": user_accounts}
     try:
@@ -50,7 +49,6 @@ def save_accounts_data():
         logger.info(f"✅ Аккаунты сохранены в {DATA_FILE}")
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения аккаунтов: {e}")
-
 
 def load_accounts_data():
     global user_accounts, user_sessions
@@ -99,7 +97,6 @@ def load_accounts_data():
                     accounts.remove(acc)
                     save_accounts_data()
 
-
 async def check_client(client):
     try:
         await client.connect()
@@ -112,12 +109,10 @@ async def check_client(client):
         logger.error(f"Ошибка проверки клиента: {e}")
         return False
 
-
 def get_unique_session_path(user_id: int, phone: str) -> str:
     os.makedirs("sessions", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"sessions/user_{user_id}_{phone}_{timestamp}.session"
-
 
 @router.message(F.text == "👤 Профили")
 async def accounts_menu(message: Message, state: FSMContext):
@@ -133,7 +128,6 @@ async def accounts_menu(message: Message, state: FSMContext):
             text += f"• {acc.get('first_name', '')} {acc.get('last_name', '')} (@{acc.get('username', 'нет')})\n"
     text += f"\nℹ️ На обычном тарифе доступен только 1 профиль"
     await message.answer(text, reply_markup=get_accounts_kb())
-
 
 @router.callback_query(AccountStates.main, lambda c: c.data == "add_profile")
 async def add_account_start_callback(callback: CallbackQuery, state: FSMContext):
@@ -153,7 +147,6 @@ async def add_account_start_callback(callback: CallbackQuery, state: FSMContext)
         "Выберите способ входа 👇",
         reply_markup=get_login_method_kb()
     )
-
 
 @router.callback_query(AccountStates.adding_phone, lambda c: c.data == "sms_login")
 async def sms_login_callback(callback: CallbackQuery, state: FSMContext):
@@ -175,7 +168,6 @@ async def sms_login_callback(callback: CallbackQuery, state: FSMContext):
         reply_markup=get_phone_reply_kb()
     )
 
-
 @router.message(AccountStates.adding_phone, F.text == "⬅️ Назад")
 async def back_from_phone_reply(message: Message, state: FSMContext):
     await state.set_state(AccountStates.main)
@@ -191,7 +183,6 @@ async def back_from_phone_reply(message: Message, state: FSMContext):
     text += f"\nℹ️ На обычном тарифе доступен только 1 профиль"
     await message.answer(text, reply_markup=get_accounts_kb())
 
-
 @router.message(AccountStates.adding_phone, F.contact)
 async def got_contact(message: Message, state: FSMContext):
     contact = message.contact
@@ -199,7 +190,6 @@ async def got_contact(message: Message, state: FSMContext):
     if not phone.startswith("+"):
         phone = "+" + phone
     await process_phone(phone, message, state)
-
 
 @router.message(AccountStates.adding_phone, F.text)
 async def got_phone_text(message: Message, state: FSMContext):
@@ -213,7 +203,6 @@ async def got_phone_text(message: Message, state: FSMContext):
         await message.answer("⚠️ Номер должен содержать только цифры после '+'. Попробуйте снова.")
         return
     await process_phone(phone, message, state)
-
 
 async def process_phone(phone: str, message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -275,7 +264,6 @@ async def process_phone(phone: str, message: Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {str(e)}", reply_markup=get_phone_reply_kb())
         await state.set_state(AccountStates.adding_phone)
 
-
 @router.message(AccountStates.waiting_code)
 async def enter_code(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -315,7 +303,6 @@ async def enter_code(message: Message, state: FSMContext):
         logger.error(f"Ошибка входа: {e}")
         await message.answer(f"❌ Ошибка входа: {str(e)}", reply_markup=get_code_kb())
 
-
 @router.message(AccountStates.waiting_2fa_password)
 async def enter_2fa_password(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -345,9 +332,7 @@ async def enter_2fa_password(message: Message, state: FSMContext):
         logger.error(f"Ошибка входа с паролем: {e}")
         await message.answer(f"❌ Ошибка: {str(e)}", reply_markup=get_cancel_2fa_kb())
 
-
-async def save_account_profile(user_id: int, me, phone: str, client, session_path: str, message: Message,
-                               state: FSMContext):
+async def save_account_profile(user_id: int, me, phone: str, client, session_path: str, message: Message, state: FSMContext):
     acc_info = {
         "phone": phone,
         "first_name": me.first_name,
@@ -370,7 +355,6 @@ async def save_account_profile(user_id: int, me, phone: str, client, session_pat
         reply_markup=get_accounts_kb()
     )
 
-
 @router.callback_query(AccountStates.adding_phone, lambda c: c.data == "back_to_accounts")
 async def back_to_accounts_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -387,7 +371,6 @@ async def back_to_accounts_callback(callback: CallbackQuery, state: FSMContext):
     text += f"\nℹ️ На обычном тарифе доступен только 1 профиль"
     await callback.message.edit_text(text, reply_markup=get_accounts_kb())
 
-
 @router.callback_query(AccountStates.waiting_code, lambda c: c.data == "code_hint")
 async def code_hint_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -402,7 +385,6 @@ async def code_hint_callback(callback: CallbackQuery, state: FSMContext):
         "4️⃣ Попробуйте запросить код повторно через «🔄 Повторить».",
         reply_markup=get_code_kb()
     )
-
 
 @router.callback_query(AccountStates.waiting_code, lambda c: c.data == "retry_phone")
 async def retry_phone_callback(callback: CallbackQuery, state: FSMContext):
@@ -419,7 +401,6 @@ async def retry_phone_callback(callback: CallbackQuery, state: FSMContext):
         "📞 Введите номер телефона заново.\nПример: +19876001213",
         reply_markup=get_phone_reply_kb()
     )
-
 
 @router.callback_query(AccountStates.waiting_2fa_password, lambda c: c.data == "back_to_accounts")
 async def back_from_2fa_callback(callback: CallbackQuery, state: FSMContext):
@@ -443,7 +424,6 @@ async def back_from_2fa_callback(callback: CallbackQuery, state: FSMContext):
     text += f"\nℹ️ На обычном тарифе доступен только 1 профиль"
     await callback.message.edit_text(text, reply_markup=get_accounts_kb())
 
-
 @router.callback_query(AccountStates.main, lambda c: c.data == "delete_profile")
 async def delete_profile_start_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -461,7 +441,6 @@ async def delete_profile_start_callback(callback: CallbackQuery, state: FSMConte
         "Это действие необратимо.",
         reply_markup=get_confirm_delete_kb()
     )
-
 
 @router.callback_query(AccountStates.deleting_confirm, lambda c: c.data == "confirm_delete_yes")
 async def confirm_delete_callback(callback: CallbackQuery, state: FSMContext):
@@ -508,7 +487,6 @@ async def confirm_delete_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("❌ Профиль уже был удалён.", reply_markup=get_accounts_kb())
     await state.set_state(AccountStates.main)
 
-
 @router.callback_query(AccountStates.deleting_confirm, lambda c: c.data == "confirm_delete_no")
 async def cancel_delete_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -525,9 +503,8 @@ async def cancel_delete_callback(callback: CallbackQuery, state: FSMContext):
     text += f"\nℹ️ На обычном тарифе доступен только 1 профиль"
     await callback.message.edit_text(text, reply_markup=get_accounts_kb())
 
-
 # ============================================================
-# QR-ВХОД
+# QR-ВХОД (исправленный)
 # ============================================================
 
 @router.callback_query(AccountStates.adding_phone, lambda c: c.data == "qr_login")
@@ -564,8 +541,10 @@ async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
         img.save(bio, format="PNG")
         bio.seek(0)
 
+        # Используем BufferedInputFile для отправки байтов
+        from aiogram.types import BufferedInputFile
         await callback.message.answer_photo(
-            photo=bio,
+            photo=BufferedInputFile(bio.getvalue(), filename="qr.png"),
             caption=(
                 "📷 **Вход по QR-коду**\n\n"
                 "1️⃣ Откройте Telegram на телефоне\n"
@@ -588,7 +567,6 @@ async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
     except Exception as e:
         logger.error(f"Ошибка QR-логина: {e}")
         await callback.message.answer(f"❌ Ошибка: {str(e)}\nПопробуйте снова.")
-
 
 @router.callback_query(AccountStates.qr_code, lambda c: c.data == "qr_refresh")
 async def qr_refresh_callback(callback: CallbackQuery, state: FSMContext):
@@ -615,15 +593,9 @@ async def qr_refresh_callback(callback: CallbackQuery, state: FSMContext):
         img.save(bio, format="PNG")
         bio.seek(0)
 
+        from aiogram.types import BufferedInputFile
         await callback.message.edit_media(
-            types.InputMediaPhoto(media=bio, caption=(
-                "📷 **Вход по QR-коду**\n\n"
-                "1️⃣ Откройте Telegram на телефоне\n"
-                "2️⃣ Настройки → Устройства → Привязать устройство\n"
-                "3️⃣ Наведите камеру на этот QR-код\n\n"
-                "⏳ QR-код действителен ~30 секунд\n"
-                "🔄 Он обновится автоматически"
-            )),
+            types.InputMediaPhoto(media=BufferedInputFile(bio.getvalue(), filename="qr.png")),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔄 Обновить QR", callback_data="qr_refresh")],
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_accounts")]
@@ -632,7 +604,6 @@ async def qr_refresh_callback(callback: CallbackQuery, state: FSMContext):
         await callback.answer("🔄 QR-код обновлён!")
     except Exception as e:
         await callback.message.answer(f"❌ Ошибка обновления QR: {str(e)}")
-
 
 @router.callback_query(AccountStates.qr_code, lambda c: c.data == "back_to_accounts")
 async def back_from_qr(callback: CallbackQuery, state: FSMContext):
@@ -658,7 +629,6 @@ async def back_from_qr(callback: CallbackQuery, state: FSMContext):
         "Выберите способ входа 👇",
         reply_markup=get_login_method_kb()
     )
-
 
 async def check_qr_login(user_id: int, message: types.Message):
     data = temp_data.get(user_id)
@@ -697,7 +667,6 @@ async def check_qr_login(user_id: int, message: types.Message):
             del temp_data[user_id]
         if user_id in qr_tasks:
             del qr_tasks[user_id]
-
 
 # ============================================================
 # ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
