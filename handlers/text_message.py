@@ -3,7 +3,7 @@ import json
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from aiogram import Router, F, types
+from aiogram import Router, F, types, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -11,7 +11,7 @@ from telethon import TelegramClient
 from telethon.tl.types import Channel, Chat
 from telethon.errors import RPCError, FloodWaitError
 
-from config import DATA_FILE, BOT_USERNAME
+from config import DATA_FILE, BOT_USERNAME, BOT_TOKEN
 from states import TextMessageStates, MailingStates, GroupStates
 from keyboards import (
     main_menu_kb, get_menu_text_kb, get_count_kb, get_buttons_count_kb,
@@ -27,12 +27,14 @@ from utils.scheduler import schedule_mailing, cancel_schedule
 
 logger = logging.getLogger(__name__)
 router = Router()
+bot = Bot(token=BOT_TOKEN)
 
 user_mailing_settings = {}
 user_mailing_stats = {}
 user_mailing_tasks = {}
 temp_groups_data = {}
 user_sent_messages = {}
+
 
 def save_mailing_data():
     data = {
@@ -42,6 +44,7 @@ def save_mailing_data():
     }
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+
 
 def load_mailing_data():
     global user_mailing_settings, user_mailing_stats, user_sent_messages
@@ -55,6 +58,7 @@ def load_mailing_data():
         user_mailing_settings = {}
         user_mailing_stats = {}
         user_sent_messages = {}
+
 
 def get_panel_text(user_id: int) -> str:
     accounts = accounts_module.user_accounts.get(user_id, [])
@@ -88,6 +92,7 @@ def get_panel_text(user_id: int) -> str:
     )
     return text
 
+
 def get_stats_text(user_id: int) -> str:
     stats = user_mailing_stats.get(user_id, {})
     if not stats or stats.get("status") == "Остановлена" and stats.get("sent_total", 0) == 0:
@@ -107,52 +112,98 @@ def get_stats_text(user_id: int) -> str:
     )
     return text
 
+
 def get_signature(user_id: int) -> str:
     if is_subscription_active(user_id):
         return ""
     else:
         return f"\n\nPa$$ыLka 4epe3 - @{BOT_USERNAME}"
 
+
 def extract_message_data(message: Message) -> dict:
+    """Извлекает текст, сущности и медиа из сообщения"""
     data = {}
+
+    # Сохраняем текст с HTML-разметкой (для эмодзи)
     if message.html_text:
         data["text"] = message.html_text
     elif message.text:
         data["text"] = message.text
     else:
         data["text"] = ""
+
+    # Сохраняем сущности (для премиум-эмодзи)
+    if message.entities:
+        data["entities"] = message.entities
+    else:
+        data["entities"] = []
+
+    # Сохраняем медиа (только file_id)
     if message.photo:
-        data["media"] = message.photo.file_id
+        data["media"] = message.photo[-1].file_id  # самая большая версия
+        data["media_type"] = "photo"
     elif message.video:
         data["media"] = message.video.file_id
+        data["media_type"] = "video"
     elif message.document:
         data["media"] = message.document.file_id
+        data["media_type"] = "document"
     elif message.audio:
         data["media"] = message.audio.file_id
+        data["media_type"] = "audio"
     elif message.voice:
         data["media"] = message.voice.file_id
+        data["media_type"] = "voice"
     elif message.animation:
         data["media"] = message.animation.file_id
+        data["media_type"] = "animation"
     elif message.sticker:
         data["media"] = message.sticker.file_id
+        data["media_type"] = "sticker"
     else:
         data["media"] = None
+        data["media_type"] = None
+
     data["buttons"] = []
     return data
 
+
 async def send_message_to_group(client, group_entity, message_data: dict, signature: str):
+    """
+    Отправляет сообщение в группу с поддержкой медиа и премиум-эмодзи.
+    """
     try:
         text = message_data.get("text", "")
         if text and signature:
             text += signature
-        media = message_data.get("media")
-        if media:
-            await client.send_message(
+
+        media_type = message_data.get("media_type")
+        media_id = message_data.get("media")
+
+        # Если есть медиа — отправляем через send_file
+        if media_id and media_type:
+            # Получаем файл из Telegram
+            file = await bot.get_file(media_id)
+            file_bytes = await bot.download_file(file.file_path)
+
+            # Сохраняем во временный файл
+            temp_file = f"temp_{datetime.now().timestamp()}.jpg"
+            with open(temp_file, "wb") as f:
+                f.write(file_bytes)
+
+            # Отправляем с подписью
+            await client.send_file(
                 entity=group_entity,
-                message=text if text else "📎",
+                file=temp_file,
+                caption=text if text else None,
                 parse_mode='html'
             )
+
+            # Удаляем временный файл
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
         else:
+            # Текстовое сообщение (с эмодзи)
             await client.send_message(
                 entity=group_entity,
                 message=text,
@@ -164,116 +215,64 @@ async def send_message_to_group(client, group_entity, message_data: dict, signat
     except RPCError as e:
         return False, str(e)
     except Exception as e:
+        logger.error(f"Ошибка отправки: {e}")
         return False, str(e)
 
+
 # ====== ОПТИМИЗИРОВАННАЯ ФОНОВАЯ ЗАДАЧА ======
-    async def mailing_task(user_id: git add hand):
-        settings = user_mailing_settings.get(user_id, {})
-        stats = user_mailing_stats.get(user_id, {})
-        signature = get_signature(user_id)
-        sessions = accounts_module.user_sessions.get(user_id, [])
-        if not sessions:
-            stats["status"] = "Нет активной сессии"
-            user_mailing_stats[user_id] = stats
-            save_mailing_data()
-            return
-        client = sessions[0]
-        msg_data = user_sent_messages.get(user_id, {})
-        if not msg_data:
-            stats["status"] = "Нет сохранённого сообщения"
-            user_mailing_stats[user_id] = stats
-            save_mailing_data()
-            return
+async def mailing_task(user_id: int):
+    settings = user_mailing_settings.get(user_id, {})
+    stats = user_mailing_stats.get(user_id, {})
+    signature = get_signature(user_id)
+    sessions = accounts_module.user_sessions.get(user_id, [])
+    if not sessions:
+        stats["status"] = "Нет активной сессии"
+        user_mailing_stats[user_id] = stats
+        save_mailing_data()
+        return
+    client = sessions[0]
+    msg_data = user_sent_messages.get(user_id, {})
+    if not msg_data:
+        stats["status"] = "Нет сохранённого сообщения"
+        user_mailing_stats[user_id] = stats
+        save_mailing_data()
+        return
 
-        # Определяем, является ли msg_data списком (разные сообщения)
-        is_multiple = isinstance(msg_data, list)
-        if is_multiple and not msg_data:
-            stats["status"] = "Пустой список сообщений"
-            user_mailing_stats[user_id] = stats
-            save_mailing_data()
-            return
-        # Если одно сообщение, приводим к списку для единообразия
-        if not is_multiple:
-            messages = [msg_data]
-        else:
-            messages = msg_data
+    # Определяем, является ли msg_data списком (разные сообщения)
+    is_multiple = isinstance(msg_data, list)
+    if is_multiple and not msg_data:
+        stats["status"] = "Пустой список сообщений"
+        user_mailing_stats[user_id] = stats
+        save_mailing_data()
+        return
+    if not is_multiple:
+        messages = [msg_data]
+    else:
+        messages = msg_data
 
-        group_ids = settings.get("groups_list", [])
-        if not group_ids:
-            stats["status"] = "Не выбраны группы"
-            user_mailing_stats[user_id] = stats
-            save_mailing_data()
-            return
+    group_ids = settings.get("groups_list", [])
+    if not group_ids:
+        stats["status"] = "Не выбраны группы"
+        user_mailing_stats[user_id] = stats
+        save_mailing_data()
+        return
 
-        group_entities = []
-        for g in group_ids:
-            try:
-                entity = await client.get_entity(g['id'])
-                group_entities.append(entity)
-            except Exception as e:
-                logger.error(f"Не удалось получить сущность группы {g['id']}: {e}")
-        if not group_entities:
-            stats["status"] = "Не удалось получить ни одной группы"
-            user_mailing_stats[user_id] = stats
-            save_mailing_data()
-            return
-
-        interval = settings.get("interval", 5)
-        cycle_interval = settings.get("cycle_interval", 5)
-        msg_index = 0
-
+    group_entities = []
+    for g in group_ids:
         try:
-            while settings.get("is_active", False):
-                if settings.get("stop_time") and datetime.now() >= settings["stop_time"]:
-                    settings["is_active"] = False
-                    stats["status"] = "Остановлена по таймеру"
-                    break
-                for group_entity in group_entities:
-                    if not settings.get("is_active", False):
-                        break
-                    current_msg = messages[msg_index % len(messages)]
-                    msg_index += 1
-
-                    success, error = await send_message_to_group(client, group_entity, current_msg, signature)
-                    if success:
-                        stats["sent_today"] += 1
-                        stats["sent_total"] += 1
-                        stats["current_cycle"] += 1
-                        stats["last_cycle_start"] = datetime.now().isoformat()
-                    else:
-                        logger.warning(f"Ошибка отправки в группу {group_entity.id}: {error}")
-                    await asyncio.sleep(interval)
-
-                stats["completed_cycles"] += 1
-                stats["current_cycle"] = 0
-                if settings.get("is_active", False):
-                    await asyncio.sleep(cycle_interval * 60)
-
-            if settings.get("is_active", False):
-                settings["is_active"] = False
-                stats["status"] = "Завершена"
-            else:
-                stats["status"] = "Остановлена пользователем"
-        except asyncio.CancelledError:
-            settings["is_active"] = False
-            stats["status"] = "Остановлена пользователем"
-            raise
+            entity = await client.get_entity(g['id'])
+            group_entities.append(entity)
         except Exception as e:
-            logger.error(f"Критическая ошибка: {e}")
-            stats["status"] = f"Ошибка: {str(e)}"
-            settings["is_active"] = False
-        finally:
-            user_mailing_settings[user_id] = settings
-            user_mailing_stats[user_id] = stats
-            save_mailing_data()
-    finally:
-        user_mailing_settings[user_id] = settings
+            logger.error(f"Не удалось получить сущность группы {g['id']}: {e}")
+    if not group_entities:
+        stats["status"] = "Не удалось получить ни одной группы"
         user_mailing_stats[user_id] = stats
         save_mailing_data()
         return
 
     interval = settings.get("interval", 5)
     cycle_interval = settings.get("cycle_interval", 5)
+    msg_index = 0
 
     try:
         while settings.get("is_active", False):
@@ -281,27 +280,27 @@ async def send_message_to_group(client, group_entity, message_data: dict, signat
                 settings["is_active"] = False
                 stats["status"] = "Остановлена по таймеру"
                 break
-            for i in range(0, len(group_entities), batch_size):
+            for group_entity in group_entities:
                 if not settings.get("is_active", False):
                     break
-                batch = group_entities[i:i+batch_size]
-                tasks = [send_message_to_group(client, entity, msg_data, signature) for entity in batch]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for idx, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        logger.error(f"Ошибка в batch: {result}")
-                    elif result[0]:
-                        stats["sent_today"] += 1
-                        stats["sent_total"] += 1
-                        stats["current_cycle"] += 1
-                        stats["last_cycle_start"] = datetime.now().isoformat()
-                    else:
-                        logger.warning(f"Ошибка отправки: {result[1]}")
+                current_msg = messages[msg_index % len(messages)]
+                msg_index += 1
+
+                success, error = await send_message_to_group(client, group_entity, current_msg, signature)
+                if success:
+                    stats["sent_today"] += 1
+                    stats["sent_total"] += 1
+                    stats["current_cycle"] += 1
+                    stats["last_cycle_start"] = datetime.now().isoformat()
+                else:
+                    logger.warning(f"Ошибка отправки в группу {group_entity.id}: {error}")
                 await asyncio.sleep(interval)
+
             stats["completed_cycles"] += 1
             stats["current_cycle"] = 0
             if settings.get("is_active", False):
                 await asyncio.sleep(cycle_interval * 60)
+
         if settings.get("is_active", False):
             settings["is_active"] = False
             stats["status"] = "Завершена"
@@ -320,11 +319,11 @@ async def send_message_to_group(client, group_entity, message_data: dict, signat
         user_mailing_stats[user_id] = stats
         save_mailing_data()
 
+
 # ====== /start ======
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    # Проверяем реферальный параметр
     args = message.text.split()
     if len(args) > 1:
         param = args[1]
@@ -957,9 +956,7 @@ async def groups_add_callback(callback: CallbackQuery, state: FSMContext):
         groups = []
         for dialog in dialogs:
             entity = dialog.entity
-            # Проверяем, что это группа (Chat) или супергруппа (Channel с мегагруппой)
             if isinstance(entity, (Channel, Chat)):
-                # Явно проверяем, что это не канал (broadcast) и это группа/супергруппа
                 is_group = getattr(entity, 'megagroup', False) or getattr(entity, 'chat', False)
                 is_broadcast = getattr(entity, 'broadcast', False)
                 if is_group and not is_broadcast:
@@ -972,14 +969,6 @@ async def groups_add_callback(callback: CallbackQuery, state: FSMContext):
                     })
         if not groups:
             await callback.message.edit_text("📭 У вас нет групп (только каналы или пусто).", reply_markup=get_groups_kb())
-            return
-        temp_groups_data[user_id] = {'groups': groups, 'page': 0}
-        await show_groups_page_callback(callback, state, user_id, 0)
-    except Exception as e:
-        await callback.message.edit_text(f"❌ Ошибка при загрузке групп: {str(e)}\nПопробуйте позже.", reply_markup=get_groups_kb())
-                    })
-        if not groups:
-            await callback.message.edit_text("📭 У вас нет групп или каналов, доступных для рассылки.", reply_markup=get_groups_kb())
             return
         temp_groups_data[user_id] = {'groups': groups, 'page': 0}
         await show_groups_page_callback(callback, state, user_id, 0)
@@ -1185,4 +1174,3 @@ async def back_to_main_global(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("⬅️ Возврат в главное меню.")
     await callback.message.answer("Выберите раздел 👇", reply_markup=main_menu_kb)
-

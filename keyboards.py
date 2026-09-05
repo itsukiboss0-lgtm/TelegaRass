@@ -221,6 +221,7 @@ def get_accounts_kb() -> InlineKeyboardMarkup:
 def get_login_method_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📲 По SMS", callback_data="sms_login")],
+        [InlineKeyboardButton(text="📷 По QR-коду", callback_data="qr_login")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_accounts")]
     ])
 

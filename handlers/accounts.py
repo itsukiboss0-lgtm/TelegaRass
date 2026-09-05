@@ -3,6 +3,7 @@ import json
 import asyncio
 import logging
 from datetime import datetime
+from io import BytesIO
 from aiogram import Router, F, types
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
@@ -19,6 +20,7 @@ from telethon.errors import (
     PasswordHashInvalidError,
 )
 
+import qrcode
 from config import API_ID, API_HASH, MAX_ACCOUNTS, DATA_FILE
 from states import AccountStates
 from keyboards import (
@@ -37,6 +39,7 @@ router = Router()
 user_sessions = {}
 user_accounts = {}
 temp_data = {}
+qr_tasks = {}  # user_id -> asyncio.Task
 
 def save_accounts_data():
     data = {"user_accounts": user_accounts}
@@ -499,6 +502,167 @@ async def cancel_delete_callback(callback: CallbackQuery, state: FSMContext):
             text += f"• {acc.get('first_name', '')} {acc.get('last_name', '')} (@{acc.get('username', 'нет')})\n"
     text += f"\nℹ️ На обычном тарифе доступен только 1 профиль"
     await callback.message.edit_text(text, reply_markup=get_accounts_kb())
+
+# ============================================================
+# НОВЫЙ РАЗДЕЛ: ВХОД ПО QR-КОДУ
+# ============================================================
+
+@router.callback_query(AccountStates.adding_phone, lambda c: c.data == "qr_login")
+async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+
+    # Если уже есть временные данные – закрываем клиент
+    if user_id in temp_data:
+        try:
+            await temp_data[user_id]["client"].disconnect()
+        except:
+            pass
+        del temp_data[user_id]
+
+    # Создаём временный клиент для QR
+    session_path = get_unique_session_path(user_id, f"qr_{user_id}")
+    client = TelegramClient(session_path, API_ID, API_HASH)
+    await client.connect()
+
+    try:
+        # Запрашиваем QR-логин
+        qr_login = await client.qr_login()
+
+        temp_data[user_id] = {
+            "client": client,
+            "session_path": session_path,
+            "qr_login": qr_login,
+            "qr_refresh_task": None
+        }
+        await state.set_state(AccountStates.qr_code)
+
+        # Генерируем QR-код
+        qr = qrcode.QRCode(border=1, box_size=10)
+        qr.add_data(qr_login.url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        bio = BytesIO()
+        img.save(bio, format="PNG")
+        bio.seek(0)
+
+        await callback.message.delete()
+        await callback.message.answer_photo(
+            photo=bio,
+            caption=(
+                "📷 **Вход по QR-коду**\n\n"
+                "Отсканируйте QR-код через Telegram:\n"
+                "**Настройки → Устройства → Привязать устройство**\n\n"
+                "⏳ QR-код действителен ~30 секунд\n"
+                "🔄 Он обновится автоматически\n\n"
+                "🔄 Или нажмите «Обновить» для нового кода"
+            ),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Обновить QR", callback_data="qr_refresh")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_accounts")]
+            ])
+        )
+
+        # Запускаем фоновую проверку QR
+        qr_tasks[user_id] = asyncio.create_task(check_qr_login(user_id, callback.message))
+
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Ошибка: {str(e)}")
+        await state.set_state(AccountStates.adding_phone)
+
+@router.callback_query(AccountStates.qr_code, lambda c: c.data == "qr_refresh")
+async def qr_refresh_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+    data = temp_data.get(user_id)
+    if not data:
+        await callback.message.edit_text("❌ Сессия истекла. Начните заново.")
+        await state.set_state(AccountStates.adding_phone)
+        return
+
+    qr_login = data.get("qr_login")
+    if not qr_login:
+        await callback.message.edit_text("❌ QR-логин не найден. Начните заново.")
+        return
+
+    try:
+        # Создаём новый QR-код
+        qr_login.recreate()
+        qr = qrcode.QRCode(border=1, box_size=10)
+        qr.add_data(qr_login.url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        bio = BytesIO()
+        img.save(bio, format="PNG")
+        bio.seek(0)
+
+        await callback.message.edit_media(
+            types.InputMediaPhoto(media=bio, caption=(
+                "📷 **Вход по QR-коду**\n\n"
+                "Отсканируйте QR-код через Telegram:\n"
+                "**Настройки → Устройства → Привязать устройство**\n\n"
+                "⏳ QR-код действителен ~30 секунд\n"
+                "🔄 Он обновится автоматически"
+            )),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Обновить QR", callback_data="qr_refresh")],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_accounts")]
+            ])
+        )
+        await callback.answer("🔄 QR-код обновлён!")
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Ошибка обновления QR: {str(e)}")
+
+async def check_qr_login(user_id: int, message: types.Message):
+    """Фоновая задача ожидания сканирования QR"""
+    data = temp_data.get(user_id)
+    if not data:
+        return
+
+    qr_login = data.get("qr_login")
+    client = data.get("client")
+
+    try:
+        # Ждём сканирования с таймаутом 60 секунд
+        await qr_login.wait(timeout=60)
+        # Если дошли сюда – QR отсканирован и сессия активна
+        me = await client.get_me()
+        # Отменяем задачу обновления QR (если была)
+        if user_id in qr_tasks and qr_tasks[user_id] != asyncio.current_task():
+            qr_tasks[user_id].cancel()
+        # Сохраняем профиль
+        await save_account_profile(
+            user_id,
+            me,
+            me.phone,
+            client,
+            data["session_path"],
+            message,
+            None  # state не нужен, так как мы уже в фоне
+        )
+        # Отправляем сообщение об успехе
+        await message.answer("✅ Аккаунт успешно добавлен через QR-код!")
+        # Удаляем временные данные
+        if user_id in temp_data:
+            del temp_data[user_id]
+        if user_id in qr_tasks:
+            del qr_tasks[user_id]
+
+    except asyncio.CancelledError:
+        # Задача отменена
+        pass
+    except Exception as e:
+        # Таймаут или ошибка
+        await message.answer(f"❌ Ошибка входа по QR: {str(e)}\nПопробуйте снова или используйте SMS.")
+        await client.disconnect()
+        if user_id in temp_data:
+            del temp_data[user_id]
+        if user_id in qr_tasks:
+            del qr_tasks[user_id]
+
+# ============================================================
+# ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
+# ============================================================
 
 @router.callback_query(lambda c: c.data == "back_to_main")
 async def back_to_main_from_profiles(callback: CallbackQuery, state: FSMContext):
