@@ -90,12 +90,10 @@ def get_remaining_time(user_id: int) -> str:
                 return "🔄 Следующий цикл вот-вот начнётся"
         except:
             pass
-    # Если цикл в процессе или данных нет
     start_time = settings.get("start_time")
     if start_time:
         try:
             start_dt = datetime.fromisoformat(start_time) if isinstance(start_time, str) else start_time
-            elapsed = (now - start_dt).total_seconds()
             return f"⏳ Работает с {start_dt.strftime('%H:%M')}, следующий цикл после паузы"
         except:
             pass
@@ -242,7 +240,6 @@ async def send_message_to_group(client, group_entity, message_data: dict, signat
         logger.error(f"Ошибка отправки: {e}")
         return False, str(e)
 
-# ====== ФОНОВАЯ ЗАДАЧА ======
 async def mailing_task(user_id: int):
     settings = user_mailing_settings.get(user_id, {})
     stats = user_mailing_stats.get(user_id, {})
@@ -348,7 +345,6 @@ async def mailing_task(user_id: int):
         user_mailing_stats[user_id] = stats
         save_mailing_data()
 
-# ====== /start ======
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -373,7 +369,6 @@ async def cmd_start(message: Message, state: FSMContext):
         reply_markup=main_menu_kb
     )
 
-# ====== АВТО РАССЫЛКА ======
 @router.message(F.text == "🚀 Авто рассылка")
 async def auto_mailing_panel(message: Message, state: FSMContext):
     await state.set_state(MailingStates.panel)
@@ -534,7 +529,6 @@ async def autostop_menu_callback(callback: CallbackQuery, state: FSMContext):
     if current is None:
         current_str = "♾ Бесконечно"
     else:
-        # current может быть timedelta или None
         if isinstance(current, timedelta):
             hours = current.total_seconds() // 3600
             current_str = f"{int(hours)} ч."
@@ -949,7 +943,7 @@ async def go_home_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("🏠 Возврат в главное меню.")
     await callback.message.answer("Выберите раздел 👇", reply_markup=main_menu_kb)
 
-# ====== НАСТРОЙКА ГРУПП ======
+# ====== НАСТРОЙКА ГРУПП (обновлённая с удалением) ======
 @router.message(F.text == "👥 Настройка групп")
 async def groups_menu(message: Message, state: FSMContext):
     await state.set_state(GroupStates.main)
@@ -977,13 +971,84 @@ async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     settings = user_mailing_settings.get(user_id, {})
     selected_groups = settings.get("groups_list", [])
+
     if not selected_groups:
         await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
         return
-    text = "📋 <b>Ваши выбранные группы:</b>\n\n"
-    for i, g in enumerate(selected_groups, 1):
-        text += f"{i}. {g.get('title', 'Без названия')} 👥 {g.get('participants_count', 0)}\n"
-    await callback.message.edit_text(text, reply_markup=get_groups_kb())
+
+    buttons = []
+    for g in selected_groups:
+        title = g.get('title', 'Без названия')
+        participants = g.get('participants_count', 0)
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"👥 {title} ({participants})",
+                callback_data="noop"
+            ),
+            InlineKeyboardButton(
+                text="🗑 Удалить",
+                callback_data=f"remove_group_{g['id']}"
+            )
+        ])
+
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_groups_menu")])
+
+    await callback.message.edit_text(
+        "📋 <b>Ваши выбранные группы:</b>\n\n"
+        "Нажмите «🗑 Удалить» рядом с группой, чтобы убрать её из списка.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
+
+@router.callback_query(lambda c: c.data.startswith('remove_group_'))
+async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+    group_id = int(callback.data.split('_')[2])
+
+    settings = user_mailing_settings.get(user_id, {})
+    groups = settings.get("groups_list", [])
+
+    group_to_remove = None
+    for g in groups:
+        if g['id'] == group_id:
+            group_to_remove = g
+            break
+
+    if not group_to_remove:
+        await callback.message.edit_text("❌ Группа не найдена.", reply_markup=get_groups_kb())
+        return
+
+    groups.remove(group_to_remove)
+    settings["groups_list"] = groups
+    settings["groups_count"] = len(groups)
+    user_mailing_settings[user_id] = settings
+    save_mailing_data()
+
+    await callback.message.edit_text(
+        f"✅ Группа «{group_to_remove.get('title', 'Без названия')}» удалена.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Показать обновлённый список", callback_data="groups_list")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_groups_menu")]
+        ])
+    )
+
+@router.callback_query(lambda c: c.data == "back_to_groups_menu")
+async def back_to_groups_menu_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+    settings = user_mailing_settings.get(user_id, {})
+    selected_groups = settings.get("groups_list", [])
+    if selected_groups:
+        groups_text = "\n".join([f"• {g.get('title', 'Без названия')} 👥 {g.get('participants_count', 0)}" for g in selected_groups])
+    else:
+        groups_text = "Не настроено"
+
+    await callback.message.edit_text(
+        f"👥 <b>Настройка групп</b>\n\n"
+        f"📋 Выбранные группы:\n{groups_text}\n\n"
+        "Выберите действие 👇",
+        reply_markup=get_groups_kb()
+    )
 
 @router.callback_query(GroupStates.main, lambda c: c.data == "groups_add")
 async def groups_add_callback(callback: CallbackQuery, state: FSMContext):
