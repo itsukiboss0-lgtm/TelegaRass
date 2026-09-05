@@ -39,7 +39,8 @@ router = Router()
 user_sessions = {}
 user_accounts = {}
 temp_data = {}
-qr_tasks = {}  # user_id -> asyncio.Task
+qr_tasks = {}
+
 
 def save_accounts_data():
     data = {"user_accounts": user_accounts}
@@ -49,6 +50,7 @@ def save_accounts_data():
         logger.info(f"✅ Аккаунты сохранены в {DATA_FILE}")
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения аккаунтов: {e}")
+
 
 def load_accounts_data():
     global user_accounts, user_sessions
@@ -97,6 +99,7 @@ def load_accounts_data():
                     accounts.remove(acc)
                     save_accounts_data()
 
+
 async def check_client(client):
     try:
         await client.connect()
@@ -109,10 +112,12 @@ async def check_client(client):
         logger.error(f"Ошибка проверки клиента: {e}")
         return False
 
+
 def get_unique_session_path(user_id: int, phone: str) -> str:
     os.makedirs("sessions", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"sessions/user_{user_id}_{phone}_{timestamp}.session"
+
 
 @router.message(F.text == "👤 Профили")
 async def accounts_menu(message: Message, state: FSMContext):
@@ -128,6 +133,7 @@ async def accounts_menu(message: Message, state: FSMContext):
             text += f"• {acc.get('first_name', '')} {acc.get('last_name', '')} (@{acc.get('username', 'нет')})\n"
     text += f"\nℹ️ На обычном тарифе доступен только 1 профиль"
     await message.answer(text, reply_markup=get_accounts_kb())
+
 
 @router.callback_query(AccountStates.main, lambda c: c.data == "add_profile")
 async def add_account_start_callback(callback: CallbackQuery, state: FSMContext):
@@ -147,6 +153,7 @@ async def add_account_start_callback(callback: CallbackQuery, state: FSMContext)
         "Выберите способ входа 👇",
         reply_markup=get_login_method_kb()
     )
+
 
 @router.callback_query(AccountStates.adding_phone, lambda c: c.data == "sms_login")
 async def sms_login_callback(callback: CallbackQuery, state: FSMContext):
@@ -168,6 +175,7 @@ async def sms_login_callback(callback: CallbackQuery, state: FSMContext):
         reply_markup=get_phone_reply_kb()
     )
 
+
 @router.message(AccountStates.adding_phone, F.text == "⬅️ Назад")
 async def back_from_phone_reply(message: Message, state: FSMContext):
     await state.set_state(AccountStates.main)
@@ -183,6 +191,7 @@ async def back_from_phone_reply(message: Message, state: FSMContext):
     text += f"\nℹ️ На обычном тарифе доступен только 1 профиль"
     await message.answer(text, reply_markup=get_accounts_kb())
 
+
 @router.message(AccountStates.adding_phone, F.contact)
 async def got_contact(message: Message, state: FSMContext):
     contact = message.contact
@@ -190,6 +199,7 @@ async def got_contact(message: Message, state: FSMContext):
     if not phone.startswith("+"):
         phone = "+" + phone
     await process_phone(phone, message, state)
+
 
 @router.message(AccountStates.adding_phone, F.text)
 async def got_phone_text(message: Message, state: FSMContext):
@@ -203,6 +213,7 @@ async def got_phone_text(message: Message, state: FSMContext):
         await message.answer("⚠️ Номер должен содержать только цифры после '+'. Попробуйте снова.")
         return
     await process_phone(phone, message, state)
+
 
 async def process_phone(phone: str, message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -264,6 +275,7 @@ async def process_phone(phone: str, message: Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {str(e)}", reply_markup=get_phone_reply_kb())
         await state.set_state(AccountStates.adding_phone)
 
+
 @router.message(AccountStates.waiting_code)
 async def enter_code(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -303,6 +315,7 @@ async def enter_code(message: Message, state: FSMContext):
         logger.error(f"Ошибка входа: {e}")
         await message.answer(f"❌ Ошибка входа: {str(e)}", reply_markup=get_code_kb())
 
+
 @router.message(AccountStates.waiting_2fa_password)
 async def enter_2fa_password(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -332,7 +345,9 @@ async def enter_2fa_password(message: Message, state: FSMContext):
         logger.error(f"Ошибка входа с паролем: {e}")
         await message.answer(f"❌ Ошибка: {str(e)}", reply_markup=get_cancel_2fa_kb())
 
-async def save_account_profile(user_id: int, me, phone: str, client, session_path: str, message: Message, state: FSMContext):
+
+async def save_account_profile(user_id: int, me, phone: str, client, session_path: str, message: Message,
+                               state: FSMContext):
     acc_info = {
         "phone": phone,
         "first_name": me.first_name,
@@ -355,6 +370,7 @@ async def save_account_profile(user_id: int, me, phone: str, client, session_pat
         reply_markup=get_accounts_kb()
     )
 
+
 @router.callback_query(AccountStates.adding_phone, lambda c: c.data == "back_to_accounts")
 async def back_to_accounts_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -371,6 +387,7 @@ async def back_to_accounts_callback(callback: CallbackQuery, state: FSMContext):
     text += f"\nℹ️ На обычном тарифе доступен только 1 профиль"
     await callback.message.edit_text(text, reply_markup=get_accounts_kb())
 
+
 @router.callback_query(AccountStates.waiting_code, lambda c: c.data == "code_hint")
 async def code_hint_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -385,6 +402,7 @@ async def code_hint_callback(callback: CallbackQuery, state: FSMContext):
         "4️⃣ Попробуйте запросить код повторно через «🔄 Повторить».",
         reply_markup=get_code_kb()
     )
+
 
 @router.callback_query(AccountStates.waiting_code, lambda c: c.data == "retry_phone")
 async def retry_phone_callback(callback: CallbackQuery, state: FSMContext):
@@ -401,6 +419,7 @@ async def retry_phone_callback(callback: CallbackQuery, state: FSMContext):
         "📞 Введите номер телефона заново.\nПример: +19876001213",
         reply_markup=get_phone_reply_kb()
     )
+
 
 @router.callback_query(AccountStates.waiting_2fa_password, lambda c: c.data == "back_to_accounts")
 async def back_from_2fa_callback(callback: CallbackQuery, state: FSMContext):
@@ -424,6 +443,7 @@ async def back_from_2fa_callback(callback: CallbackQuery, state: FSMContext):
     text += f"\nℹ️ На обычном тарифе доступен только 1 профиль"
     await callback.message.edit_text(text, reply_markup=get_accounts_kb())
 
+
 @router.callback_query(AccountStates.main, lambda c: c.data == "delete_profile")
 async def delete_profile_start_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -441,6 +461,7 @@ async def delete_profile_start_callback(callback: CallbackQuery, state: FSMConte
         "Это действие необратимо.",
         reply_markup=get_confirm_delete_kb()
     )
+
 
 @router.callback_query(AccountStates.deleting_confirm, lambda c: c.data == "confirm_delete_yes")
 async def confirm_delete_callback(callback: CallbackQuery, state: FSMContext):
@@ -487,6 +508,7 @@ async def confirm_delete_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("❌ Профиль уже был удалён.", reply_markup=get_accounts_kb())
     await state.set_state(AccountStates.main)
 
+
 @router.callback_query(AccountStates.deleting_confirm, lambda c: c.data == "confirm_delete_no")
 async def cancel_delete_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -503,8 +525,9 @@ async def cancel_delete_callback(callback: CallbackQuery, state: FSMContext):
     text += f"\nℹ️ На обычном тарифе доступен только 1 профиль"
     await callback.message.edit_text(text, reply_markup=get_accounts_kb())
 
+
 # ============================================================
-# НОВЫЙ РАЗДЕЛ: ВХОД ПО QR-КОДУ
+# QR-ВХОД
 # ============================================================
 
 @router.callback_query(AccountStates.adding_phone, lambda c: c.data == "qr_login")
@@ -512,7 +535,6 @@ async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     user_id = callback.from_user.id
 
-    # Если уже есть временные данные – закрываем клиент
     if user_id in temp_data:
         try:
             await temp_data[user_id]["client"].disconnect()
@@ -520,24 +542,20 @@ async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
             pass
         del temp_data[user_id]
 
-    # Создаём временный клиент для QR
     session_path = get_unique_session_path(user_id, f"qr_{user_id}")
     client = TelegramClient(session_path, API_ID, API_HASH)
     await client.connect()
 
     try:
-        # Запрашиваем QR-логин
         qr_login = await client.qr_login()
 
         temp_data[user_id] = {
             "client": client,
             "session_path": session_path,
             "qr_login": qr_login,
-            "qr_refresh_task": None
         }
         await state.set_state(AccountStates.qr_code)
 
-        # Генерируем QR-код
         qr = qrcode.QRCode(border=1, box_size=10)
         qr.add_data(qr_login.url)
         qr.make(fit=True)
@@ -546,16 +564,16 @@ async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
         img.save(bio, format="PNG")
         bio.seek(0)
 
-        await callback.message.delete()
         await callback.message.answer_photo(
             photo=bio,
             caption=(
                 "📷 **Вход по QR-коду**\n\n"
-                "Отсканируйте QR-код через Telegram:\n"
-                "**Настройки → Устройства → Привязать устройство**\n\n"
+                "1️⃣ Откройте Telegram на телефоне\n"
+                "2️⃣ Настройки → Устройства → Привязать устройство\n"
+                "3️⃣ Наведите камеру на этот QR-код\n\n"
                 "⏳ QR-код действителен ~30 секунд\n"
                 "🔄 Он обновится автоматически\n\n"
-                "🔄 Или нажмите «Обновить» для нового кода"
+                "📌 После сканирования аккаунт добавится автоматически."
             ),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔄 Обновить QR", callback_data="qr_refresh")],
@@ -563,12 +581,14 @@ async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
             ])
         )
 
-        # Запускаем фоновую проверку QR
+        if user_id in qr_tasks and not qr_tasks[user_id].done():
+            qr_tasks[user_id].cancel()
         qr_tasks[user_id] = asyncio.create_task(check_qr_login(user_id, callback.message))
 
     except Exception as e:
-        await callback.message.edit_text(f"❌ Ошибка: {str(e)}")
-        await state.set_state(AccountStates.adding_phone)
+        logger.error(f"Ошибка QR-логина: {e}")
+        await callback.message.answer(f"❌ Ошибка: {str(e)}\nПопробуйте снова.")
+
 
 @router.callback_query(AccountStates.qr_code, lambda c: c.data == "qr_refresh")
 async def qr_refresh_callback(callback: CallbackQuery, state: FSMContext):
@@ -576,17 +596,16 @@ async def qr_refresh_callback(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     data = temp_data.get(user_id)
     if not data:
-        await callback.message.edit_text("❌ Сессия истекла. Начните заново.")
+        await callback.message.answer("❌ Сессия истекла. Начните заново.")
         await state.set_state(AccountStates.adding_phone)
         return
 
     qr_login = data.get("qr_login")
     if not qr_login:
-        await callback.message.edit_text("❌ QR-логин не найден. Начните заново.")
+        await callback.message.answer("❌ QR-логин не найден.")
         return
 
     try:
-        # Создаём новый QR-код
         qr_login.recreate()
         qr = qrcode.QRCode(border=1, box_size=10)
         qr.add_data(qr_login.url)
@@ -599,8 +618,9 @@ async def qr_refresh_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_media(
             types.InputMediaPhoto(media=bio, caption=(
                 "📷 **Вход по QR-коду**\n\n"
-                "Отсканируйте QR-код через Telegram:\n"
-                "**Настройки → Устройства → Привязать устройство**\n\n"
+                "1️⃣ Откройте Telegram на телефоне\n"
+                "2️⃣ Настройки → Устройства → Привязать устройство\n"
+                "3️⃣ Наведите камеру на этот QR-код\n\n"
                 "⏳ QR-код действителен ~30 секунд\n"
                 "🔄 Он обновится автоматически"
             )),
@@ -611,10 +631,36 @@ async def qr_refresh_callback(callback: CallbackQuery, state: FSMContext):
         )
         await callback.answer("🔄 QR-код обновлён!")
     except Exception as e:
-        await callback.message.edit_text(f"❌ Ошибка обновления QR: {str(e)}")
+        await callback.message.answer(f"❌ Ошибка обновления QR: {str(e)}")
+
+
+@router.callback_query(AccountStates.qr_code, lambda c: c.data == "back_to_accounts")
+async def back_from_qr(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+
+    if user_id in temp_data:
+        try:
+            await temp_data[user_id]["client"].disconnect()
+        except:
+            pass
+        del temp_data[user_id]
+    if user_id in qr_tasks:
+        if not qr_tasks[user_id].done():
+            qr_tasks[user_id].cancel()
+        del qr_tasks[user_id]
+
+    await state.set_state(AccountStates.adding_phone)
+    await callback.message.delete()
+    await callback.message.answer(
+        "➕ <b>Добавьте профиль</b>\n\n"
+        "🔒 Аккаунт используется только для авторассылки. Личные переписки НЕ читаются и НЕ сохраняются.\n"
+        "Выберите способ входа 👇",
+        reply_markup=get_login_method_kb()
+    )
+
 
 async def check_qr_login(user_id: int, message: types.Message):
-    """Фоновая задача ожидания сканирования QR"""
     data = temp_data.get(user_id)
     if not data:
         return
@@ -623,14 +669,10 @@ async def check_qr_login(user_id: int, message: types.Message):
     client = data.get("client")
 
     try:
-        # Ждём сканирования с таймаутом 60 секунд
         await qr_login.wait(timeout=60)
-        # Если дошли сюда – QR отсканирован и сессия активна
         me = await client.get_me()
-        # Отменяем задачу обновления QR (если была)
         if user_id in qr_tasks and qr_tasks[user_id] != asyncio.current_task():
             qr_tasks[user_id].cancel()
-        # Сохраняем профиль
         await save_account_profile(
             user_id,
             me,
@@ -638,27 +680,24 @@ async def check_qr_login(user_id: int, message: types.Message):
             client,
             data["session_path"],
             message,
-            None  # state не нужен, так как мы уже в фоне
+            None
         )
-        # Отправляем сообщение об успехе
         await message.answer("✅ Аккаунт успешно добавлен через QR-код!")
-        # Удаляем временные данные
         if user_id in temp_data:
             del temp_data[user_id]
         if user_id in qr_tasks:
             del qr_tasks[user_id]
 
     except asyncio.CancelledError:
-        # Задача отменена
         pass
     except Exception as e:
-        # Таймаут или ошибка
-        await message.answer(f"❌ Ошибка входа по QR: {str(e)}\nПопробуйте снова или используйте SMS.")
+        await message.answer(f"❌ Ошибка входа по QR: {str(e)}\nПопробуйте снова.")
         await client.disconnect()
         if user_id in temp_data:
             del temp_data[user_id]
         if user_id in qr_tasks:
             del qr_tasks[user_id]
+
 
 # ============================================================
 # ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
