@@ -35,7 +35,6 @@ user_mailing_tasks = {}
 temp_groups_data = {}
 user_sent_messages = {}
 
-
 def save_mailing_data():
     data = {
         "user_mailing_settings": user_mailing_settings,
@@ -44,7 +43,6 @@ def save_mailing_data():
     }
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-
 
 def load_mailing_data():
     global user_mailing_settings, user_mailing_stats, user_sent_messages
@@ -59,6 +57,49 @@ def load_mailing_data():
         user_mailing_stats = {}
         user_sent_messages = {}
 
+def format_time(seconds: int) -> str:
+    if seconds < 0:
+        seconds = 0
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    else:
+        return f"{minutes:02d}:{secs:02d}"
+
+def get_remaining_time(user_id: int) -> str:
+    settings = user_mailing_settings.get(user_id, {})
+    stats = user_mailing_stats.get(user_id, {})
+    if not settings.get("is_active", False):
+        return ""
+
+    now = datetime.now()
+    cycle_interval_min = settings.get("cycle_interval", 5)
+    cycle_interval_sec = cycle_interval_min * 60
+
+    cycle_end = stats.get("cycle_end_time")
+    if cycle_end:
+        try:
+            end_dt = datetime.fromisoformat(cycle_end)
+            next_start = end_dt + timedelta(seconds=cycle_interval_sec)
+            remaining = (next_start - now).total_seconds()
+            if remaining > 0:
+                return f"⏳ До следующего цикла: {format_time(int(remaining))}"
+            else:
+                return "🔄 Следующий цикл вот-вот начнётся"
+        except:
+            pass
+    # Если цикл в процессе или данных нет
+    start_time = settings.get("start_time")
+    if start_time:
+        try:
+            start_dt = datetime.fromisoformat(start_time) if isinstance(start_time, str) else start_time
+            elapsed = (now - start_dt).total_seconds()
+            return f"⏳ Работает с {start_dt.strftime('%H:%M')}, следующий цикл после паузы"
+        except:
+            pass
+    return ""
 
 def get_panel_text(user_id: int) -> str:
     accounts = accounts_module.user_accounts.get(user_id, [])
@@ -79,6 +120,10 @@ def get_panel_text(user_id: int) -> str:
         auto_stop_str = f"{int(hours)} ч."
     mention = "Вкл" if settings.get("mention_enabled", False) else "Выкл"
     status = "✅ Активно" if settings.get("is_active", False) else "⏸ Неактивно"
+    remaining = get_remaining_time(user_id)
+    if remaining:
+        remaining = "\n" + remaining
+
     text = (
         "📨 <b>Панель управления</b>\n\n"
         f"👤 <i>Профиль:</i> {profile_info}\n"
@@ -88,15 +133,18 @@ def get_panel_text(user_id: int) -> str:
         f"⏱ <i>Пауза между сообщениями:</i> {interval_between_msgs} сек.\n"
         f"🔄 <i>Интервал между циклами:</i> {cycle_interval} мин.\n"
         f"⏹ <i>Авто-стоп:</i> {auto_stop_str}\n"
-        f"🔔 <i>Упоминание:</i> {mention}\n"
+        f"🔔 <i>Упоминание:</i> {mention}"
+        f"{remaining}"
     )
     return text
-
 
 def get_stats_text(user_id: int) -> str:
     stats = user_mailing_stats.get(user_id, {})
     if not stats or stats.get("status") == "Остановлена" and stats.get("sent_total", 0) == 0:
         return None
+    remaining = get_remaining_time(user_id)
+    if remaining:
+        remaining = "\n" + remaining
     text = (
         "📊 <b>Статистика</b>\n\n"
         f"📌 <i>Статус:</i> {stats.get('status', 'Неизвестно')}\n"
@@ -109,9 +157,9 @@ def get_stats_text(user_id: int) -> str:
         f"⏱ <i>Пауза между сообщениями:</i> {stats.get('time_between_messages', 5)} сек.\n"
         f"🔄 <i>Интервал между циклами:</i> {stats.get('time_between_cycles', 5)} мин.\n"
         f"📅 <i>Последний цикл начат:</i> {stats.get('last_cycle_start') or '—'}"
+        f"{remaining}"
     )
     return text
-
 
 def get_signature(user_id: int) -> str:
     if is_subscription_active(user_id):
@@ -119,28 +167,20 @@ def get_signature(user_id: int) -> str:
     else:
         return f"\n\nPa$$ыLka 4epe3 - @{BOT_USERNAME}"
 
-
 def extract_message_data(message: Message) -> dict:
-    """Извлекает текст, сущности и медиа из сообщения"""
     data = {}
-
-    # Сохраняем текст с HTML-разметкой (для эмодзи)
     if message.html_text:
         data["text"] = message.html_text
     elif message.text:
         data["text"] = message.text
     else:
         data["text"] = ""
-
-    # Сохраняем сущности (для премиум-эмодзи)
     if message.entities:
         data["entities"] = message.entities
     else:
         data["entities"] = []
-
-    # Сохраняем медиа (только file_id)
     if message.photo:
-        data["media"] = message.photo[-1].file_id  # самая большая версия
+        data["media"] = message.photo[-1].file_id
         data["media_type"] = "photo"
     elif message.video:
         data["media"] = message.video.file_id
@@ -163,47 +203,31 @@ def extract_message_data(message: Message) -> dict:
     else:
         data["media"] = None
         data["media_type"] = None
-
     data["buttons"] = []
     return data
 
-
 async def send_message_to_group(client, group_entity, message_data: dict, signature: str):
-    """
-    Отправляет сообщение в группу с поддержкой медиа и премиум-эмодзи.
-    """
     try:
         text = message_data.get("text", "")
         if text and signature:
             text += signature
-
         media_type = message_data.get("media_type")
         media_id = message_data.get("media")
-
-        # Если есть медиа — отправляем через send_file
         if media_id and media_type:
-            # Получаем файл из Telegram
             file = await bot.get_file(media_id)
             file_bytes = await bot.download_file(file.file_path)
-
-            # Сохраняем во временный файл
             temp_file = f"temp_{datetime.now().timestamp()}.jpg"
             with open(temp_file, "wb") as f:
                 f.write(file_bytes)
-
-            # Отправляем с подписью
             await client.send_file(
                 entity=group_entity,
                 file=temp_file,
                 caption=text if text else None,
                 parse_mode='html'
             )
-
-            # Удаляем временный файл
             if os.path.exists(temp_file):
                 os.remove(temp_file)
         else:
-            # Текстовое сообщение (с эмодзи)
             await client.send_message(
                 entity=group_entity,
                 message=text,
@@ -218,8 +242,7 @@ async def send_message_to_group(client, group_entity, message_data: dict, signat
         logger.error(f"Ошибка отправки: {e}")
         return False, str(e)
 
-
-# ====== ОПТИМИЗИРОВАННАЯ ФОНОВАЯ ЗАДАЧА ======
+# ====== ФОНОВАЯ ЗАДАЧА ======
 async def mailing_task(user_id: int):
     settings = user_mailing_settings.get(user_id, {})
     stats = user_mailing_stats.get(user_id, {})
@@ -238,7 +261,6 @@ async def mailing_task(user_id: int):
         save_mailing_data()
         return
 
-    # Определяем, является ли msg_data списком (разные сообщения)
     is_multiple = isinstance(msg_data, list)
     if is_multiple and not msg_data:
         stats["status"] = "Пустой список сообщений"
@@ -280,6 +302,9 @@ async def mailing_task(user_id: int):
                 settings["is_active"] = False
                 stats["status"] = "Остановлена по таймеру"
                 break
+
+            stats["cycle_start_time"] = datetime.now().isoformat()
+            stats["cycle_end_time"] = None
             for group_entity in group_entities:
                 if not settings.get("is_active", False):
                     break
@@ -298,6 +323,10 @@ async def mailing_task(user_id: int):
 
             stats["completed_cycles"] += 1
             stats["current_cycle"] = 0
+            stats["cycle_end_time"] = datetime.now().isoformat()
+            user_mailing_stats[user_id] = stats
+            save_mailing_data()
+
             if settings.get("is_active", False):
                 await asyncio.sleep(cycle_interval * 60)
 
@@ -318,7 +347,6 @@ async def mailing_task(user_id: int):
         user_mailing_settings[user_id] = settings
         user_mailing_stats[user_id] = stats
         save_mailing_data()
-
 
 # ====== /start ======
 @router.message(Command("start"))
@@ -375,10 +403,20 @@ async def auto_mailing_panel(message: Message, state: FSMContext):
             "time_between_messages": 5,
             "time_between_cycles": 5,
             "last_cycle_start": None,
+            "cycle_start_time": None,
+            "cycle_end_time": None,
         }
     panel_text = get_panel_text(user_id)
     is_active = user_mailing_settings[user_id].get("is_active", False)
     await message.answer(panel_text, reply_markup=get_mailing_panel_kb(is_active))
+
+@router.callback_query(MailingStates.panel, lambda c: c.data == "refresh_panel")
+async def refresh_panel_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+    panel_text = get_panel_text(user_id)
+    is_active = user_mailing_settings[user_id].get("is_active", False)
+    await callback.message.edit_text(panel_text, reply_markup=get_mailing_panel_kb(is_active))
 
 @router.callback_query(MailingStates.panel, lambda c: c.data == "start_mailing")
 async def start_mailing_callback(callback: CallbackQuery, state: FSMContext):
@@ -413,10 +451,12 @@ async def start_mailing_callback(callback: CallbackQuery, state: FSMContext):
     stats["time_between_messages"] = settings.get("interval", 5)
     stats["time_between_cycles"] = settings.get("cycle_interval", 5)
     stats["last_cycle_start"] = None
+    stats["cycle_start_time"] = None
+    stats["cycle_end_time"] = None
     settings["is_active"] = True
-    settings["start_time"] = datetime.now()
+    settings["start_time"] = datetime.now().isoformat()
     if settings.get("auto_stop_time"):
-        settings["stop_time"] = datetime.now() + settings["auto_stop_time"]
+        settings["stop_time"] = (datetime.now() + settings["auto_stop_time"]).isoformat()
     else:
         settings["stop_time"] = None
 
@@ -494,8 +534,12 @@ async def autostop_menu_callback(callback: CallbackQuery, state: FSMContext):
     if current is None:
         current_str = "♾ Бесконечно"
     else:
-        hours = current.total_seconds() // 3600
-        current_str = f"{int(hours)} ч."
+        # current может быть timedelta или None
+        if isinstance(current, timedelta):
+            hours = current.total_seconds() // 3600
+            current_str = f"{int(hours)} ч."
+        else:
+            current_str = "♾ Бесконечно"
     await callback.message.edit_text(
         f"⏱ <b>Авто-стоп</b>\n"
         f"Автоматическая рассылка остановится через заданное время после запуска.\n"
@@ -561,7 +605,6 @@ async def set_mention_callback(callback: CallbackQuery, state: FSMContext):
     )
     await callback.message.answer(panel_text, reply_markup=get_mailing_panel_kb(is_active))
 
-# ====== РАСПИСАНИЕ ======
 @router.callback_query(MailingStates.panel, lambda c: c.data == "schedule_mailing")
 async def schedule_menu_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
