@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from io import BytesIO
 from aiogram import Router, F, types
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from telethon import TelegramClient
 from telethon.errors import (
