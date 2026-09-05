@@ -139,7 +139,7 @@ async def accounts_menu(message: Message, state: FSMContext):
     user_id = message.from_user.id
     accounts = user_accounts.get(user_id, [])
     count = len(accounts)
-    text = f"👤 <b>Проfilе</b> ({count}/{MAX_ACCOUNTS})\n\n"
+    text = f"👤 <b>Профили</b> ({count}/{MAX_ACCOUNTS})\n\n"
     if count == 0:
         text += "📭 Профиль еще не добавлен.\n\n"
     else:
@@ -244,7 +244,8 @@ async def process_phone(phone: str, message: Message, state: FSMContext):
             "phone": phone,
             "phone_code_hash": result.phone_code_hash,
             "client": client,
-            "session_path": session_path
+            "session_path": session_path,
+            "login_method": "sms"   # помечаем, что это SMS-вход
         }
         await state.set_state(AccountStates.waiting_code)
         logger.info(f"Код отправлен на номер {phone}")
@@ -309,6 +310,7 @@ async def enter_code(message: Message, state: FSMContext):
     except SessionPasswordNeededError:
         await state.set_state(AccountStates.waiting_2fa_password)
         temp_data[user_id]["client"] = client
+        temp_data[user_id]["login_method"] = "sms"  # сохраняем метод
         await message.answer(
             "🔐 Для этого аккаунта включена двухфакторная аутентификация.\n"
             "Введите пароль от аккаунта:",
@@ -322,6 +324,7 @@ async def enter_code(message: Message, state: FSMContext):
         logger.error(f"Ошибка входа: {e}")
         await message.answer(f"❌ Ошибка входа: {str(e)}", reply_markup=get_code_kb())
 
+# Обработчик ввода пароля 2FA (используется и для SMS, и для QR)
 @router.message(AccountStates.waiting_2fa_password)
 async def enter_2fa_password(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -337,14 +340,35 @@ async def enter_2fa_password(message: Message, state: FSMContext):
         return
 
     client = data["client"]
+    login_method = data.get("login_method", "sms")
 
     try:
         await client.sign_in(password=password)
         me = await client.get_me()
-        await save_account_profile(
-            user_id, me, data["phone"], client,
-            data["session_path"], message, state
-        )
+
+        if login_method == "qr":
+            # QR-вход – сохраняем профиль напрямую (без FSM)
+            save_profile_direct(
+                user_id,
+                me,
+                me.phone,
+                data["session_path"],
+                client
+            )
+            await message.answer(
+                f"✅ Профиль добавлен через QR: {me.first_name} {me.last_name or ''} (@{me.username or 'нет'})",
+                reply_markup=get_accounts_kb()
+            )
+        else:
+            # SMS-вход – используем стандартное сохранение
+            await save_account_profile(
+                user_id, me, data["phone"], client,
+                data["session_path"], message, state
+            )
+        # Удаляем временные данные
+        if user_id in temp_data:
+            del temp_data[user_id]
+        await state.set_state(AccountStates.main)
     except PasswordHashInvalidError:
         await message.answer("❌ Неверный пароль. Попробуйте снова.", reply_markup=get_cancel_2fa_kb())
     except Exception as e:
@@ -522,7 +546,7 @@ async def cancel_delete_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text, reply_markup=get_accounts_kb())
 
 # ============================================================
-# QR-ВХОД (исправленный, с обработкой 2FA)
+# QR-ВХОД (исправленный, с поддержкой 2FA)
 # ============================================================
 
 @router.callback_query(AccountStates.adding_phone, lambda c: c.data == "qr_login")
@@ -551,6 +575,7 @@ async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
             "client": client,
             "session_path": session_path,
             "qr_login": qr_login,
+            "login_method": "qr",
         }
         await state.set_state(AccountStates.qr_code)
 
@@ -653,7 +678,7 @@ async def back_from_qr(callback: CallbackQuery, state: FSMContext):
         reply_markup=get_login_method_kb()
     )
 
-async def check_qr_login(user_id: int, message: types.Message, state: FSMContext = None):
+async def check_qr_login(user_id: int, message: types.Message, state: FSMContext):
     data = temp_data.get(user_id)
     if not data:
         return
@@ -663,6 +688,8 @@ async def check_qr_login(user_id: int, message: types.Message, state: FSMContext
 
     try:
         await qr_login.wait(timeout=60)
+        # QR сканирован, но может потребоваться пароль (2FA)
+        # Если пароль не требуется, вход завершён
         me = await client.get_me()
         if user_id in qr_tasks and qr_tasks[user_id] != asyncio.current_task():
             qr_tasks[user_id].cancel()
@@ -685,24 +712,17 @@ async def check_qr_login(user_id: int, message: types.Message, state: FSMContext
             pass
 
     except SessionPasswordNeededError:
-        # 2FA на аккаунте – QR не поддерживается
+        # Требуется пароль 2FA – запрашиваем у пользователя
         await message.answer(
-            "🔐 На этом аккаунте включена двухфакторная аутентификация.\n"
-            "QR-вход не поддерживается для аккаунтов с 2FA.\n"
-            "Пожалуйста, используйте вход по SMS.",
+            "🔐 Для этого аккаунта включена двухфакторная аутентификация.\n"
+            "Пожалуйста, введите пароль от аккаунта:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📲 Войти по SMS", callback_data="sms_login")],
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_accounts")]
+                [InlineKeyboardButton(text="⬅️ Отмена", callback_data="back_to_accounts")]
             ])
         )
-        await client.disconnect()
-        if user_id in temp_data:
-            del temp_data[user_id]
-        if user_id in qr_tasks:
-            del qr_tasks[user_id]
-        # Переключаем состояние на добавление телефона (чтобы можно было ввести номер)
-        if state:
-            await state.set_state(AccountStates.adding_phone)
+        # Переключаем состояние на ожидание пароля
+        await state.set_state(AccountStates.waiting_2fa_password)
+        # Данные уже в temp_data, включая login_method = "qr"
         return
 
     except asyncio.CancelledError:
