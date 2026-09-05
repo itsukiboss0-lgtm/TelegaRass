@@ -943,7 +943,7 @@ async def go_home_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("🏠 Возврат в главное меню.")
     await callback.message.answer("Выберите раздел 👇", reply_markup=main_menu_kb)
 
-# ====== НАСТРОЙКА ГРУПП (обновлённая с удалением) ======
+# ====== НАСТРОЙКА ГРУПП (с удалением по нажатию) ======
 @router.message(F.text == "👥 Настройка групп")
 async def groups_menu(message: Message, state: FSMContext):
     await state.set_state(GroupStates.main)
@@ -982,11 +982,7 @@ async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
         participants = g.get('participants_count', 0)
         buttons.append([
             InlineKeyboardButton(
-                text=f"👥 {title} ({participants})",
-                callback_data="noop"
-            ),
-            InlineKeyboardButton(
-                text="🗑 Удалить",
+                text=f"🗑 {title} ({participants})",
                 callback_data=f"remove_group_{g['id']}"
             )
         ])
@@ -995,7 +991,7 @@ async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
 
     await callback.message.edit_text(
         "📋 <b>Ваши выбранные группы:</b>\n\n"
-        "Нажмите «🗑 Удалить» рядом с группой, чтобы убрать её из списка.",
+        "Нажмите на группу, чтобы удалить её из списка.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
 
