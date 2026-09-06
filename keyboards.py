@@ -294,10 +294,6 @@ def build_groups_inline(groups_list: list, page: int = 0, per_page: int = 9) -> 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def build_groups_list_inline(groups_list: list, page: int = 0, per_page: int = 18) -> InlineKeyboardMarkup:
-    """
-    Создаёт inline-клавиатуру для списка выбранных групп с пагинацией.
-    per_page = 18 групп на страницу (6 рядов по 3 кнопки)
-    """
     total = len(groups_list)
     start = page * per_page
     end = min(start + per_page, total)
