@@ -158,7 +158,7 @@ def get_stats_text(user_id: int) -> str:
         f"🔄 <i>Текущий цикл:</i> {stats.get('current_cycle', 0)}\n"
         f"✅ <i>Завершённые циклы:</i> {stats.get('completed_cycles', 0)}\n"
         f"👥 <i>Выбранные группы:</i> {stats.get('selected_groups', 0)}\n"
-        f"⏳ <i>Готово к отправке:</i> {stats.get('ready_to_send', 0)}\n"
+        f"⏳ <i>Готово к отправке:</i> {stats.get('ready_to_send', 0)}\n
         f"⏱ <i>Пауза между сообщениями:</i> {stats.get('time_between_messages', 5)} сек.\n"
         f"🔄 <i>Интервал между циклами:</i> {stats.get('time_between_cycles', 5)} мин.\n"
         f"📅 <i>Последний цикл начат:</i> {stats.get('last_cycle_start') or '—'}"
@@ -167,20 +167,12 @@ def get_stats_text(user_id: int) -> str:
     return text
 
 def get_signature(user_id: int) -> str:
-    if is_subscription_active(user_id):
-        return ""
-    else:
-        return f"\n\nPa$$ыLka 4epe3 - @{BOT_USERNAME}"
+    # Подпись больше не добавляется
+    return ""
 
 def extract_message_data(message: Message) -> dict:
     data = {}
-    if message.html_text:
-        data["text"] = message.html_text
-    elif message.text:
-        data["text"] = message.text
-    else:
-        data["text"] = ""
-
+    data["text"] = message.text or ""
     if message.entities:
         data["entities"] = message.entities
     else:
@@ -250,14 +242,12 @@ def convert_entities(entities, text: str):
             result.append(MessageEntityCustomEmoji(offset=offset, length=length, document_id=ent.custom_emoji_id))
     return result
 
-async def send_message_to_group(client, group_entity, message_data: dict, signature: str):
+async def send_message_to_group(client, group_entity, message_data: dict):
     try:
         text = message_data.get("text", "")
-        if text and signature:
-            text += signature
-
         media_type = message_data.get("media_type")
         media_id = message_data.get("media")
+        entities = message_data.get("entities", [])
 
         if media_id and media_type:
             file = await bot.get_file(media_id)
@@ -274,13 +264,13 @@ async def send_message_to_group(client, group_entity, message_data: dict, signat
             if os.path.exists(temp_file):
                 os.remove(temp_file)
         else:
-            entities = message_data.get("entities")
             if entities:
                 telethon_entities = convert_entities(entities, text)
                 await client.send_message(
                     entity=group_entity,
                     message=text,
-                    entities=telethon_entities
+                    entities=telethon_entities,
+                    parse_mode=None
                 )
             else:
                 await client.send_message(
@@ -300,7 +290,6 @@ async def send_message_to_group(client, group_entity, message_data: dict, signat
 async def mailing_task(user_id: int):
     settings = user_mailing_settings.get(user_id, {})
     stats = user_mailing_stats.get(user_id, {})
-    signature = get_signature(user_id)
     sessions = accounts_module.user_sessions.get(user_id, [])
     if not sessions:
         stats["status"] = "Нет активной сессии"
@@ -365,7 +354,7 @@ async def mailing_task(user_id: int):
                 current_msg = messages[msg_index % len(messages)]
                 msg_index += 1
 
-                success, error = await send_message_to_group(client, group_entity, current_msg, signature)
+                success, error = await send_message_to_group(client, group_entity, current_msg)
                 if success:
                     stats["sent_today"] += 1
                     stats["sent_total"] += 1
@@ -402,6 +391,7 @@ async def mailing_task(user_id: int):
         user_mailing_stats[user_id] = stats
         save_mailing_data()
 
+# ====== Обработчики ======
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -1000,7 +990,7 @@ async def go_home_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("🏠 Возврат в главное меню.")
     await callback.message.answer("Выберите раздел 👇", reply_markup=main_menu_kb)
 
-# ====== НАСТРОЙКА ГРУПП (исправленная) ======
+# ====== НАСТРОЙКА ГРУПП ======
 @router.message(F.text == "👥 Настройка групп")
 async def groups_menu(message: Message, state: FSMContext):
     await state.set_state(GroupStates.main)
