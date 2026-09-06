@@ -1000,7 +1000,7 @@ async def go_home_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("🏠 Возврат в главное меню.")
     await callback.message.answer("Выберите раздел 👇", reply_markup=main_menu_kb)
 
-# ====== НАСТРОЙКА ГРУПП ======
+# ====== НАСТРОЙКА ГРУПП (исправленная) ======
 @router.message(F.text == "👥 Настройка групп")
 async def groups_menu(message: Message, state: FSMContext):
     await state.set_state(GroupStates.main)
@@ -1033,7 +1033,6 @@ async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
         return
 
-    # Каждая группа — одна кнопка с названием (удаление по нажатию)
     buttons = []
     for g in selected_groups:
         title = g.get('title', 'Без названия')
@@ -1078,7 +1077,6 @@ async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
     user_mailing_settings[user_id] = settings
     save_mailing_data()
 
-    # Перерисовываем список
     if not groups:
         await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
         return
@@ -1124,7 +1122,6 @@ async def groups_add_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     user_id = callback.from_user.id
 
-    # Сообщение о загрузке
     loading_msg = await callback.message.answer("⏳ Загружаем группы, пожалуйста, подождите...")
 
     sessions = accounts_module.user_sessions.get(user_id, [])
