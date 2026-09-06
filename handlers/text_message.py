@@ -10,6 +10,13 @@ from aiogram.fsm.context import FSMContext
 from telethon import TelegramClient
 from telethon.tl.types import Channel, Chat
 from telethon.errors import RPCError, FloodWaitError
+from telethon.tl.types import (
+    MessageEntityBold, MessageEntityItalic, MessageEntityCode,
+    MessageEntityPre, MessageEntityTextUrl, MessageEntityUrl,
+    MessageEntityEmail, MessageEntityMention, MessageEntityHashtag,
+    MessageEntityCashtag, MessageEntityPhone, MessageEntityUnderline,
+    MessageEntityStrike, MessageEntityBlockquote, MessageEntityCustomEmoji
+)
 
 from config import DATA_FILE, BOT_USERNAME, BOT_TOKEN
 from states import TextMessageStates, MailingStates, GroupStates
@@ -164,16 +171,13 @@ def get_signature(user_id: int) -> str:
     # Подпись больше не добавляется
     return ""
 
-# ======= ИСПРАВЛЕННАЯ ФУНКЦИЯ (сохраняет HTML-текст) =======
 def extract_message_data(message: Message) -> dict:
     data = {}
-    # Сохраняем HTML-текст (он содержит теги <tg-emoji> для кастомных эмодзи)
-    if message.html_text:
-        data["text"] = message.html_text
+    data["text"] = message.text or ""
+    if message.entities:
+        data["entities"] = message.entities
     else:
-        data["text"] = message.text or ""
-    # Сущности больше не нужны, оставим для совместимости
-    data["entities"] = []
+        data["entities"] = []
 
     if message.photo:
         data["media"] = message.photo[-1].file_id
@@ -202,15 +206,53 @@ def extract_message_data(message: Message) -> dict:
     data["buttons"] = []
     return data
 
-# ======= ИСПРАВЛЕННАЯ ФУНКЦИЯ (отправка через HTML) =======
+def convert_entities(entities, text: str):
+    """Конвертирует aiogram MessageEntity в telethon MessageEntity"""
+    result = []
+    for ent in entities:
+        offset = ent.offset
+        length = ent.length
+        if ent.type == "bold":
+            result.append(MessageEntityBold(offset=offset, length=length))
+        elif ent.type == "italic":
+            result.append(MessageEntityItalic(offset=offset, length=length))
+        elif ent.type == "code":
+            result.append(MessageEntityCode(offset=offset, length=length))
+        elif ent.type == "pre":
+            result.append(MessageEntityPre(offset=offset, length=length, language=ent.language or ""))
+        elif ent.type == "text_link":
+            result.append(MessageEntityTextUrl(offset=offset, length=length, url=ent.url))
+        elif ent.type == "url":
+            result.append(MessageEntityUrl(offset=offset, length=length))
+        elif ent.type == "email":
+            result.append(MessageEntityEmail(offset=offset, length=length))
+        elif ent.type == "mention":
+            result.append(MessageEntityMention(offset=offset, length=length))
+        elif ent.type == "hashtag":
+            result.append(MessageEntityHashtag(offset=offset, length=length))
+        elif ent.type == "cashtag":
+            result.append(MessageEntityCashtag(offset=offset, length=length))
+        elif ent.type == "phone":
+            result.append(MessageEntityPhone(offset=offset, length=length))
+        elif ent.type == "underline":
+            result.append(MessageEntityUnderline(offset=offset, length=length))
+        elif ent.type == "strikethrough":
+            result.append(MessageEntityStrike(offset=offset, length=length))
+        elif ent.type == "blockquote":
+            result.append(MessageEntityBlockquote(offset=offset, length=length))
+        elif ent.type == "custom_emoji":
+            # Кастомное эмодзи – документ ID
+            result.append(MessageEntityCustomEmoji(offset=offset, length=length, document_id=ent.custom_emoji_id))
+    return result
+
 async def send_message_to_group(client, group_entity, message_data: dict):
     try:
         text = message_data.get("text", "")
         media_type = message_data.get("media_type")
         media_id = message_data.get("media")
+        entities = message_data.get("entities", [])
 
         if media_id and media_type:
-            # Отправка медиа с caption (HTML)
             file = await bot.get_file(media_id)
             file_bytes = await bot.download_file(file.file_path)
             temp_file = f"temp_{datetime.now().timestamp()}.jpg"
@@ -225,12 +267,20 @@ async def send_message_to_group(client, group_entity, message_data: dict):
             if os.path.exists(temp_file):
                 os.remove(temp_file)
         else:
-            # Текстовое сообщение – отправляем HTML
-            await client.send_message(
-                entity=group_entity,
-                message=text,
-                parse_mode='html'
-            )
+            if entities:
+                telethon_entities = convert_entities(entities, text)
+                await client.send_message(
+                    entity=group_entity,
+                    message=text,
+                    entities=telethon_entities,
+                    parse_mode=None
+                )
+            else:
+                await client.send_message(
+                    entity=group_entity,
+                    message=text,
+                    parse_mode='html'
+                )
         return True, None
     except FloodWaitError as e:
         return False, f"FloodWait: {e.seconds} сек."
@@ -240,7 +290,6 @@ async def send_message_to_group(client, group_entity, message_data: dict):
         logger.error(f"Ошибка отправки: {e}", exc_info=True)
         return False, str(e)
 
-# ====== Остальной код без изменений ======
 async def mailing_task(user_id: int):
     settings = user_mailing_settings.get(user_id, {})
     stats = user_mailing_stats.get(user_id, {})
@@ -345,7 +394,7 @@ async def mailing_task(user_id: int):
         user_mailing_stats[user_id] = stats
         save_mailing_data()
 
-# ====== Обработчики ======
+# ====== Обработчики (все остальные, без изменений) ======
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
