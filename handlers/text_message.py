@@ -258,7 +258,7 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                 await client.send_message(
                     entity=group_entity,
                     message=text,
-                    entities=telethon_entities,
+                    formatting_entities=telethon_entities,  # было entities
                     parse_mode=None
                 )
                 logger.info("✅ Отправлено с сущностями")
