@@ -1033,28 +1033,22 @@ async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
         return
 
-    # Строим клавиатуру: каждая группа — строка с названием и кнопкой удаления
     buttons = []
     for g in selected_groups:
         title = g.get('title', 'Без названия')
         participants = g.get('participants_count', 0)
         buttons.append([
             InlineKeyboardButton(
-                text=f"👥 {title} ({participants})",
-                callback_data="noop"  # просто информационная кнопка (ничего не делает)
-            ),
-            InlineKeyboardButton(
-                text="🗑️ Удалить",
+                text=f"🗑 {title} ({participants})",
                 callback_data=f"remove_group_{g['id']}"
             )
         ])
 
-    # Кнопка "Назад" внизу
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_groups_menu")])
 
     await callback.message.edit_text(
         "📋 <b>Ваши выбранные группы:</b>\n\n"
-        "Нажмите «🗑️ Удалить» рядом с группой, чтобы убрать её из списка.",
+        "Нажмите на группу, чтобы удалить её из списка.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
 
@@ -1062,13 +1056,11 @@ async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
 async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     user_id = callback.from_user.id
-    # Извлекаем ID группы из callback_data (формат: remove_group_123)
     group_id = int(callback.data.split('_')[2])
 
     settings = user_mailing_settings.get(user_id, {})
     groups = settings.get("groups_list", [])
 
-    # Находим группу для удаления
     group_to_remove = None
     for g in groups:
         if g['id'] == group_id:
@@ -1079,15 +1071,12 @@ async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("❌ Группа не найдена.", reply_markup=get_groups_kb())
         return
 
-    # Удаляем группу
     groups.remove(group_to_remove)
     settings["groups_list"] = groups
     settings["groups_count"] = len(groups)
     user_mailing_settings[user_id] = settings
     save_mailing_data()
 
-    # Перерисовываем список групп (вызываем ту же логику, что и groups_list_callback)
-    # Чтобы не дублировать код, просто пересоздаём клавиатуру с обновлённым списком
     if not groups:
         await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
         return
@@ -1098,11 +1087,7 @@ async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
         participants = g.get('participants_count', 0)
         buttons.append([
             InlineKeyboardButton(
-                text=f"👥 {title} ({participants})",
-                callback_data="noop"
-            ),
-            InlineKeyboardButton(
-                text="🗑️ Удалить",
+                text=f"🗑 {title} ({participants})",
                 callback_data=f"remove_group_{g['id']}"
             )
         ])
@@ -1110,7 +1095,7 @@ async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
 
     await callback.message.edit_text(
         "📋 <b>Ваши выбранные группы:</b>\n\n"
-        "Нажмите «🗑️ Удалить» рядом с группой, чтобы убрать её из списка.",
+        "Нажмите на группу, чтобы удалить её из списка.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
 
@@ -1131,6 +1116,129 @@ async def back_to_groups_menu_callback(callback: CallbackQuery, state: FSMContex
         "Выберите действие 👇",
         reply_markup=get_groups_kb()
     )
+
+@router.callback_query(GroupStates.main, lambda c: c.data == "groups_add")
+async def groups_add_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+    sessions = accounts_module.user_sessions.get(user_id, [])
+    if not sessions:
+        await callback.message.edit_text("❌ Сначала добавьте профиль в разделе «Профили».", reply_markup=get_groups_kb())
+        return
+    client = sessions[0]
+    try:
+        dialogs = await client.get_dialogs()
+        groups = []
+        for dialog in dialogs:
+            entity = dialog.entity
+            if isinstance(entity, (Channel, Chat)):
+                is_group = getattr(entity, 'megagroup', False) or getattr(entity, 'chat', False)
+                is_broadcast = getattr(entity, 'broadcast', False)
+                if is_group and not is_broadcast:
+                    title = getattr(entity, 'title', 'Без названия')
+                    participants_count = getattr(entity, 'participants_count', 0)
+                    groups.append({
+                        'id': entity.id,
+                        'title': title,
+                        'participants_count': participants_count
+                    })
+        if not groups:
+            await callback.message.edit_text("📭 У вас нет групп (только каналы или пусто).", reply_markup=get_groups_kb())
+            return
+        temp_groups_data[user_id] = {'groups': groups, 'page': 0}
+        await show_groups_page_callback(callback, state, user_id, 0)
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Ошибка при загрузке групп: {str(e)}\nПопробуйте позже.", reply_markup=get_groups_kb())
+
+async def show_groups_page_callback(callback: CallbackQuery, state: FSMContext, user_id: int, page: int):
+    data = temp_groups_data.get(user_id)
+    if not data:
+        await callback.message.edit_text("Сессия истекла. Начните заново.", reply_markup=get_groups_kb())
+        return
+    groups = data.get('groups', [])
+    if not groups:
+        await callback.message.edit_text("Нет доступных групп.", reply_markup=get_groups_kb())
+        return
+    kb = build_groups_inline(groups, page)
+    data['page'] = page
+    temp_groups_data[user_id] = data
+    await callback.message.edit_text(
+        "📋 <b>Выберите группы для добавления</b> (нажмите на название):\n\n"
+        "Доступные группы (отображаются по 9):",
+        reply_markup=kb
+    )
+
+@router.callback_query(lambda c: c.data.startswith('add_group_') or c.data.startswith('groups_page_') or c.data in ['save_groups', 'select_all_groups'])
+async def handle_group_callback(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    data = temp_groups_data.get(user_id)
+    if not data and callback.data not in ['save_groups', 'select_all_groups']:
+        await callback.message.edit_text("Сессия истекла. Начните заново.")
+        await callback.answer()
+        return
+
+    if callback.data == 'save_groups':
+        if user_id in temp_groups_data:
+            del temp_groups_data[user_id]
+        await callback.message.delete()
+        await callback.message.answer("✅ Выбранные группы сохранены.", reply_markup=get_groups_kb())
+        await callback.answer()
+        await state.set_state(GroupStates.main)
+        return
+
+    if callback.data == 'select_all_groups':
+        all_groups = data.get('groups', [])
+        settings = user_mailing_settings.get(user_id, {})
+        existing = settings.get('groups_list', [])
+        existing_ids = {g['id'] for g in existing}
+        added_count = 0
+        for g in all_groups:
+            if g['id'] not in existing_ids:
+                existing.append(g)
+                added_count += 1
+        if added_count:
+            settings['groups_list'] = existing
+            settings['groups_count'] = len(existing)
+            user_mailing_settings[user_id] = settings
+            save_mailing_data()
+            await callback.answer(f"✅ Добавлено {added_count} групп (пропущены дубликаты).", show_alert=True)
+        else:
+            await callback.answer("Все группы уже добавлены.", show_alert=True)
+        page = data.get('page', 0)
+        kb = build_groups_inline(all_groups, page)
+        await callback.message.edit_reply_markup(reply_markup=kb)
+        return
+
+    if callback.data.startswith('groups_page_'):
+        page = int(callback.data.split('_')[-1])
+        groups = data.get('groups', [])
+        kb = build_groups_inline(groups, page)
+        data['page'] = page
+        temp_groups_data[user_id] = data
+        await callback.message.edit_reply_markup(reply_markup=kb)
+        await callback.answer()
+        return
+
+    group_id = int(callback.data.split('_')[-1])
+    groups = data.get('groups', [])
+    selected_group = next((g for g in groups if g['id'] == group_id), None)
+    if not selected_group:
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+    settings = user_mailing_settings.get(user_id, {})
+    existing = settings.get('groups_list', [])
+    if any(g['id'] == group_id for g in existing):
+        await callback.answer("Эта группа уже добавлена.", show_alert=True)
+        return
+    existing.append(selected_group)
+    settings['groups_list'] = existing
+    settings['groups_count'] = len(existing)
+    user_mailing_settings[user_id] = settings
+    save_mailing_data()
+    await callback.answer(f"✅ Группа '{selected_group['title']}' добавлена!", show_alert=True)
+    page = data.get('page', 0)
+    kb = build_groups_inline(groups, page)
+    await callback.message.edit_reply_markup(reply_markup=kb)
 
 # ====== ИНТЕРВАЛ ======
 @router.message(F.text == "⏱ Интервал")
