@@ -1,12 +1,12 @@
 import os
 import json
-import asyncio
 import logging
 from datetime import datetime, timedelta
 from aiogram import Router, F, types
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from config import DATA_FILE, BOT_USERNAME
+from config import DATA_FILE, ADMINS, BOT_USERNAME
 from states import TariffStates
 from keyboards import (
     get_tariff_main_kb,
@@ -18,16 +18,10 @@ from keyboards import (
 logger = logging.getLogger(__name__)
 router = Router()
 
-# Цены в звёздах
 PRICE_STARS = {1: 10, 7: 55, 15: 100, 30: 175, 60: 300, 90: 450}
+user_subscriptions = {}
+user_referrals = {}
 
-# Хранилища
-user_subscriptions = {}      # user_id -> {"active": bool, "expires_at": datetime, "days": float}
-user_referrals = {}          # user_id -> [список приглашённых user_id]
-
-# ============================================================
-# Загрузка и сохранение реферальных данных
-# ============================================================
 def load_referral_data():
     global user_referrals
     if os.path.exists(DATA_FILE):
@@ -46,9 +40,6 @@ def save_referral_data():
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, default=str)
 
-# ============================================================
-# Реферальные функции
-# ============================================================
 def get_referral_link(user_id: int) -> str:
     return f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
 
@@ -61,27 +52,28 @@ def add_referral(referrer_id: int, new_user_id: int) -> bool:
         return False
     user_referrals[referrer_id].append(new_user_id)
     save_referral_data()
-    # Начисляем 12 часов PRO (0.5 дня)
     activate_subscription(referrer_id, 0.5)
     return True
 
 def get_referral_count(user_id: int) -> int:
     return len(user_referrals.get(user_id, []))
 
-# ============================================================
-# Функции подписки
-# ============================================================
 def get_subscription_text(user_id: int) -> str:
     sub = user_subscriptions.get(user_id, {})
     is_active = sub.get("active", False)
     expires_at = sub.get("expires_at")
     if is_active and expires_at:
-        days_left = (expires_at - datetime.now()).days
-        hours_left = (expires_at - datetime.now()).total_seconds() / 3600
-        if days_left >= 1:
-            status = f"✅ Активна (осталось {days_left} дн.)"
+        now = datetime.now()
+        if expires_at > now:
+            delta = expires_at - now
+            hours = delta.total_seconds() / 3600
+            if hours >= 24:
+                days = hours // 24
+                status = f"✅ Активна (осталось {int(days)} дн.)"
+            else:
+                status = f"✅ Активна (осталось {int(hours)} ч.)"
         else:
-            status = f"✅ Активна (осталось {hours_left:.1f} ч.)"
+            status = "❌ Истекла"
     elif is_active:
         status = "✅ Активна"
     else:
@@ -112,7 +104,7 @@ def activate_subscription(user_id: int, days: float):
         "days": sub.get("days", 0) + days
     }
     logger.info(f"Подписка активирована для {user_id} на {days} дней (всего {user_subscriptions[user_id]['days']})")
-    save_referral_data()  # сохраняем, чтобы не потерять
+    save_referral_data()
 
 def check_expired_subscriptions():
     now = datetime.now()
@@ -124,9 +116,37 @@ def check_expired_subscriptions():
                 user_subscriptions[user_id] = sub
                 logger.info(f"Подписка для {user_id} истекла")
 
-# ============================================================
-# ОСНОВНОЙ ОБРАБОТЧИК: Тарифы
-# ============================================================
+# ====== КОМАНДЫ АДМИНИСТРАТОРА ======
+@router.message(Command("grant_pro"))
+async def grant_pro_command(message: Message):
+    user_id = message.from_user.id
+    if user_id not in ADMINS:
+        await message.answer("⛔ У вас нет прав для этой команды.")
+        return
+
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("❌ Формат: /grant_pro <user_id> <days>\nПример: /grant_pro 123456 30")
+        return
+
+    try:
+        target_user_id = int(args[1])
+        days = float(args[2])
+        if days <= 0:
+            await message.answer("❌ Количество дней должно быть больше 0.")
+            return
+        activate_subscription(target_user_id, days)
+        await message.answer(f"✅ Подписка PRO активирована для пользователя {target_user_id} на {days} дней.")
+    except ValueError:
+        await message.answer("❌ Некорректные данные. Используйте /grant_pro <user_id> <days>")
+
+@router.message(Command("mysub"))
+async def my_subscription_command(message: Message):
+    user_id = message.from_user.id
+    text = get_subscription_text(user_id)
+    await message.answer(f"📊 Ваша подписка:\n{text}")
+
+# ====== ОСНОВНОЙ ОБРАБОТЧИК ТАРИФОВ ======
 @router.message(F.text == "💎 Тарифы")
 async def tariff_main(message: Message, state: FSMContext):
     await state.set_state(TariffStates.main)
@@ -158,9 +178,6 @@ async def tariff_main(message: Message, state: FSMContext):
     )
     await message.answer(text, reply_markup=get_tariff_main_kb())
 
-# ============================================================
-# ОПЛАТА ЧЕРЕЗ STARS
-# ============================================================
 @router.callback_query(TariffStates.main, lambda c: c.data == "tariff_pay_stars")
 async def tariff_pay_stars_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -285,9 +302,6 @@ async def successful_payment_handler(message: Message, state: FSMContext):
             reply_markup=main_menu_kb
         )
 
-# ============================================================
-# КНОПКИ НАЗАД
-# ============================================================
 @router.callback_query(TariffStates.choosing_duration, lambda c: c.data == "back_to_tariff_main")
 async def back_to_tariff_main_from_duration(callback: CallbackQuery, state: FSMContext):
     await callback.answer()

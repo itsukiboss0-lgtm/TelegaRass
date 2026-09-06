@@ -10,6 +10,13 @@ from aiogram.fsm.context import FSMContext
 from telethon import TelegramClient
 from telethon.tl.types import Channel, Chat
 from telethon.errors import RPCError, FloodWaitError
+from telethon.tl.types import (
+    MessageEntityBold, MessageEntityItalic, MessageEntityCode,
+    MessageEntityPre, MessageEntityTextUrl, MessageEntityUrl,
+    MessageEntityEmail, MessageEntityMention, MessageEntityHashtag,
+    MessageEntityCashtag, MessageEntityPhone, MessageEntityUnderline,
+    MessageEntityStrike, MessageEntityBlockquote, MessageEntityCustomEmoji
+)
 
 from config import DATA_FILE, BOT_USERNAME, BOT_TOKEN
 from states import TextMessageStates, MailingStates, GroupStates
@@ -173,10 +180,12 @@ def extract_message_data(message: Message) -> dict:
         data["text"] = message.text
     else:
         data["text"] = ""
+
     if message.entities:
         data["entities"] = message.entities
     else:
         data["entities"] = []
+
     if message.photo:
         data["media"] = message.photo[-1].file_id
         data["media_type"] = "photo"
@@ -204,13 +213,52 @@ def extract_message_data(message: Message) -> dict:
     data["buttons"] = []
     return data
 
+def convert_entities(entities, text: str):
+    result = []
+    for ent in entities:
+        offset = ent.offset
+        length = ent.length
+        if ent.type == "bold":
+            result.append(MessageEntityBold(offset=offset, length=length))
+        elif ent.type == "italic":
+            result.append(MessageEntityItalic(offset=offset, length=length))
+        elif ent.type == "code":
+            result.append(MessageEntityCode(offset=offset, length=length))
+        elif ent.type == "pre":
+            result.append(MessageEntityPre(offset=offset, length=length, language=ent.language or ""))
+        elif ent.type == "text_link":
+            result.append(MessageEntityTextUrl(offset=offset, length=length, url=ent.url))
+        elif ent.type == "url":
+            result.append(MessageEntityUrl(offset=offset, length=length))
+        elif ent.type == "email":
+            result.append(MessageEntityEmail(offset=offset, length=length))
+        elif ent.type == "mention":
+            result.append(MessageEntityMention(offset=offset, length=length))
+        elif ent.type == "hashtag":
+            result.append(MessageEntityHashtag(offset=offset, length=length))
+        elif ent.type == "cashtag":
+            result.append(MessageEntityCashtag(offset=offset, length=length))
+        elif ent.type == "phone":
+            result.append(MessageEntityPhone(offset=offset, length=length))
+        elif ent.type == "underline":
+            result.append(MessageEntityUnderline(offset=offset, length=length))
+        elif ent.type == "strikethrough":
+            result.append(MessageEntityStrike(offset=offset, length=length))
+        elif ent.type == "blockquote":
+            result.append(MessageEntityBlockquote(offset=offset, length=length))
+        elif ent.type == "custom_emoji":
+            result.append(MessageEntityCustomEmoji(offset=offset, length=length, document_id=ent.custom_emoji_id))
+    return result
+
 async def send_message_to_group(client, group_entity, message_data: dict, signature: str):
     try:
         text = message_data.get("text", "")
         if text and signature:
             text += signature
+
         media_type = message_data.get("media_type")
         media_id = message_data.get("media")
+
         if media_id and media_type:
             file = await bot.get_file(media_id)
             file_bytes = await bot.download_file(file.file_path)
@@ -226,11 +274,20 @@ async def send_message_to_group(client, group_entity, message_data: dict, signat
             if os.path.exists(temp_file):
                 os.remove(temp_file)
         else:
-            await client.send_message(
-                entity=group_entity,
-                message=text,
-                parse_mode='html'
-            )
+            entities = message_data.get("entities")
+            if entities:
+                telethon_entities = convert_entities(entities, text)
+                await client.send_message(
+                    entity=group_entity,
+                    message=text,
+                    entities=telethon_entities
+                )
+            else:
+                await client.send_message(
+                    entity=group_entity,
+                    message=text,
+                    parse_mode='html'
+                )
         return True, None
     except FloodWaitError as e:
         return False, f"FloodWait: {e.seconds} сек."
@@ -943,7 +1000,7 @@ async def go_home_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("🏠 Возврат в главное меню.")
     await callback.message.answer("Выберите раздел 👇", reply_markup=main_menu_kb)
 
-# ====== НАСТРОЙКА ГРУПП (с удалением по нажатию) ======
+# ====== НАСТРОЙКА ГРУПП ======
 @router.message(F.text == "👥 Настройка групп")
 async def groups_menu(message: Message, state: FSMContext):
     await state.set_state(GroupStates.main)

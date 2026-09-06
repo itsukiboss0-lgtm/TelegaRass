@@ -1,6 +1,5 @@
 import os
 
-# === Чтение переменных окружения (без dotenv) ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_ID = int(os.getenv("API_ID", 123456))
 API_HASH = os.getenv("API_HASH")
@@ -13,6 +12,8 @@ LOG_FILE = "bot.log"
 LOG_LEVEL = "INFO"
 SCHEDULE_CHECK_INTERVAL = 60
 
-# Проверка на наличие токена (чтобы бот не запустился без него)
+# Список администраторов (их Telegram ID)
+ADMINS = [8728680606, 6554626251]  # замените на свои ID
+
 if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN не задан! Укажите его в переменных окружения.")
+    raise ValueError("BOT_TOKEN is not set")
