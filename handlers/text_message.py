@@ -150,6 +150,7 @@ def get_stats_text(user_id: int) -> str:
     remaining = get_remaining_time(user_id)
     if remaining:
         remaining = "\n" + remaining
+
     text = (
         "📊 <b>Статистика</b>\n\n"
         f"📌 <i>Статус:</i> {stats.get('status', 'Неизвестно')}\n"
@@ -158,7 +159,7 @@ def get_stats_text(user_id: int) -> str:
         f"🔄 <i>Текущий цикл:</i> {stats.get('current_cycle', 0)}\n"
         f"✅ <i>Завершённые циклы:</i> {stats.get('completed_cycles', 0)}\n"
         f"👥 <i>Выбранные группы:</i> {stats.get('selected_groups', 0)}\n"
-        f"⏳ <i>Готово к отправке:</i> {stats.get('ready_to_send', 0)}\n
+        f"⏳ <i>Готово к отправке:</i> {stats.get('ready_to_send', 0)}\n"
         f"⏱ <i>Пауза между сообщениями:</i> {stats.get('time_between_messages', 5)} сек.\n"
         f"🔄 <i>Интервал между циклами:</i> {stats.get('time_between_cycles', 5)} мин.\n"
         f"📅 <i>Последний цикл начат:</i> {stats.get('last_cycle_start') or '—'}"
