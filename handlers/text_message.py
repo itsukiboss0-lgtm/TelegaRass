@@ -940,6 +940,28 @@ async def go_home_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("Выберите раздел 👇", reply_markup=main_menu_kb)
 
 # ====== НАСТРОЙКА ГРУПП ======
+# ====== НАСТРОЙКА ГРУПП ======
+@router.message(F.text == "👥 Настройка групп")
+async def groups_menu(message: Message, state: FSMContext):
+    await state.set_state(GroupStates.main)
+    user_id = message.from_user.id
+    settings = user_mailing_settings.get(user_id, {})
+    if not settings.get("groups_list"):
+        settings["groups_list"] = []
+        user_mailing_settings[user_id] = settings
+        save_mailing_data()
+    selected_groups = settings.get("groups_list", [])
+    if selected_groups:
+        groups_text = "\n".join([f"• {g.get('title', 'Без названия')} 👥 {g.get('participants_count', 0)}" for g in selected_groups])
+    else:
+        groups_text = "Не настроено"
+    await message.answer(
+        f"👥 <b>Настройка групп</b>\n\n"
+        f"📋 Выбранные группы:\n{groups_text}\n\n"
+        "Выберите действие 👇",
+        reply_markup=get_groups_kb()
+    )
+
 @router.callback_query(GroupStates.main, lambda c: c.data == "groups_list")
 async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -951,7 +973,6 @@ async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
         return
 
-    # Сохраняем список во временное хранилище для пагинации
     temp_groups_data[user_id] = {'groups': selected_groups, 'page': 0}
     kb = build_groups_list_inline(selected_groups, 0)
     await callback.message.edit_text(
@@ -974,40 +995,6 @@ async def list_page_callback(callback: CallbackQuery, state: FSMContext):
     kb = build_groups_list_inline(groups, page)
     await callback.message.edit_reply_markup(reply_markup=kb)
 
-@router.callback_query(GroupStates.main, lambda c: c.data == "groups_list")
-async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    user_id = callback.from_user.id
-    settings = user_mailing_settings.get(user_id, {})
-    selected_groups = settings.get("groups_list", [])
-
-    if not selected_groups:
-        await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
-        return
-
-    # Сохраняем список во временное хранилище для пагинации
-    temp_groups_data[user_id] = {'groups': selected_groups, 'page': 0}
-    kb = build_groups_list_inline(selected_groups, 0)  # per_page по умолчанию 18
-    await callback.message.edit_text(
-        "📋 <b>Ваши выбранные группы:</b>\n\n"
-        "Нажмите на группу, чтобы удалить её из списка.\n"
-        f"Всего: {len(selected_groups)} групп",
-        reply_markup=kb
-    )
-
-@router.callback_query(lambda c: c.data.startswith('list_page_'))
-async def list_page_callback(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    user_id = callback.from_user.id
-    page = int(callback.data.split('_')[2])
-    data = temp_groups_data.get(user_id)
-    if not data:
-        await callback.message.edit_text("Сессия истекла. Начните заново.", reply_markup=get_groups_kb())
-        return
-    groups = data.get('groups', [])
-    kb = build_groups_list_inline(groups, page)  # per_page=18 по умолчанию
-    await callback.message.edit_reply_markup(reply_markup=kb)
-
 @router.callback_query(lambda c: c.data.startswith('remove_group_'))
 async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -1033,7 +1020,6 @@ async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
     user_mailing_settings[user_id] = settings
     save_mailing_data()
 
-    # Обновляем временное хранилище
     data = temp_groups_data.get(user_id)
     if data:
         data['groups'] = groups
@@ -1043,76 +1029,9 @@ async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
             await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
             return
 
-    # Перерисовываем текущую страницу
     current_page = data.get('page', 0) if data else 0
-    kb = build_groups_list_inline(groups, current_page)  # per_page=18
+    kb = build_groups_list_inline(groups, current_page)
     await callback.message.edit_reply_markup(reply_markup=kb)
-
-    buttons = []
-    for g in selected_groups:
-        title = g.get('title', 'Без названия')
-        participants = g.get('participants_count', 0)
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"🗑 {title} ({participants})",
-                callback_data=f"remove_group_{g['id']}"
-            )
-        ])
-
-    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_groups_menu")])
-
-    await callback.message.edit_text(
-        "📋 <b>Ваши выбранные группы:</b>\n\n"
-        "Нажмите на группу, чтобы удалить её из списка.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
-    )
-
-@router.callback_query(lambda c: c.data.startswith('remove_group_'))
-async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    user_id = callback.from_user.id
-    group_id = int(callback.data.split('_')[2])
-
-    settings = user_mailing_settings.get(user_id, {})
-    groups = settings.get("groups_list", [])
-
-    group_to_remove = None
-    for g in groups:
-        if g['id'] == group_id:
-            group_to_remove = g
-            break
-
-    if not group_to_remove:
-        await callback.message.edit_text("❌ Группа не найдена.", reply_markup=get_groups_kb())
-        return
-
-    groups.remove(group_to_remove)
-    settings["groups_list"] = groups
-    settings["groups_count"] = len(groups)
-    user_mailing_settings[user_id] = settings
-    save_mailing_data()
-
-    if not groups:
-        await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
-        return
-
-    buttons = []
-    for g in groups:
-        title = g.get('title', 'Без названия')
-        participants = g.get('participants_count', 0)
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"🗑 {title} ({participants})",
-                callback_data=f"remove_group_{g['id']}"
-            )
-        ])
-    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_groups_menu")])
-
-    await callback.message.edit_text(
-        "📋 <b>Ваши выбранные группы:</b>\n\n"
-        "Нажмите на группу, чтобы удалить её из списка.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
-    )
 
 @router.callback_query(lambda c: c.data == "back_to_groups_menu")
 async def back_to_groups_menu_callback(callback: CallbackQuery, state: FSMContext):
@@ -1146,7 +1065,6 @@ async def groups_add_callback(callback: CallbackQuery, state: FSMContext):
         return
     client = sessions[0]
 
-    # Проверяем, подключён ли клиент
     try:
         if not client.is_connected():
             await client.connect()
