@@ -10,13 +10,6 @@ from aiogram.fsm.context import FSMContext
 from telethon import TelegramClient
 from telethon.tl.types import Channel, Chat
 from telethon.errors import RPCError, FloodWaitError
-from telethon.tl.types import (
-    MessageEntityBold, MessageEntityItalic, MessageEntityCode,
-    MessageEntityPre, MessageEntityTextUrl, MessageEntityUrl,
-    MessageEntityEmail, MessageEntityMention, MessageEntityHashtag,
-    MessageEntityCashtag, MessageEntityPhone, MessageEntityUnderline,
-    MessageEntityStrike, MessageEntityBlockquote, MessageEntityCustomEmoji
-)
 
 from config import DATA_FILE, BOT_USERNAME, BOT_TOKEN
 from states import TextMessageStates, MailingStates, GroupStates
@@ -172,8 +165,11 @@ def get_signature(user_id: int) -> str:
 
 def extract_message_data(message: Message) -> dict:
     data = {}
-    data["text"] = message.text or ""
-    data["entities"] = message.entities if message.entities else []
+    if message.html_text:
+        data["text"] = message.html_text
+    else:
+        data["text"] = message.text or ""
+    data["entities"] = []
 
     if message.photo:
         data["media"] = message.photo[-1].file_id
@@ -202,103 +198,36 @@ def extract_message_data(message: Message) -> dict:
     data["buttons"] = []
     return data
 
-def convert_entities(entities, text: str):
-    result = []
-    for ent in entities:
-        offset = ent.offset
-        length = ent.length
-        if ent.type == "bold":
-            result.append(MessageEntityBold(offset=offset, length=length))
-        elif ent.type == "italic":
-            result.append(MessageEntityItalic(offset=offset, length=length))
-        elif ent.type == "code":
-            result.append(MessageEntityCode(offset=offset, length=length))
-        elif ent.type == "pre":
-            result.append(MessageEntityPre(offset=offset, length=length, language=ent.language or ""))
-        elif ent.type == "text_link":
-            result.append(MessageEntityTextUrl(offset=offset, length=length, url=ent.url))
-        elif ent.type == "url":
-            result.append(MessageEntityUrl(offset=offset, length=length))
-        elif ent.type == "email":
-            result.append(MessageEntityEmail(offset=offset, length=length))
-        elif ent.type == "mention":
-            result.append(MessageEntityMention(offset=offset, length=length))
-        elif ent.type == "hashtag":
-            result.append(MessageEntityHashtag(offset=offset, length=length))
-        elif ent.type == "cashtag":
-            result.append(MessageEntityCashtag(offset=offset, length=length))
-        elif ent.type == "phone":
-            result.append(MessageEntityPhone(offset=offset, length=length))
-        elif ent.type == "underline":
-            result.append(MessageEntityUnderline(offset=offset, length=length))
-        elif ent.type == "strikethrough":
-            result.append(MessageEntityStrike(offset=offset, length=length))
-        elif ent.type == "blockquote":
-            result.append(MessageEntityBlockquote(offset=offset, length=length))
-        elif ent.type == "custom_emoji":
-            result.append(MessageEntityCustomEmoji(offset=offset, length=length, document_id=ent.custom_emoji_id))
-    return result
-
 async def send_message_to_group(client, group_entity, message_data: dict):
     try:
         text = message_data.get("text", "")
         media_type = message_data.get("media_type")
         media_id = message_data.get("media")
-        entities = message_data.get("entities", [])
 
-        logger.info(f"📤 Отправка в группу {group_entity.id}")
-        logger.info(f"📝 Текст: {text[:100] if text else '(пусто)'}")
-        logger.info(f"📎 Медиа: {media_type}")
-        logger.info(f"🧩 Сущностей: {len(entities)}")
+        logger.info(f"📤 Отправка в группу {group_entity.id}, текст: {text[:100] if text else '(пусто)'}")
 
-        if entities:
-            try:
-                telethon_entities = convert_entities(entities, text)
-                logger.info(f"🔧 Преобразовано {len(telethon_entities)} сущностей")
-                await client.send_message(
-                    entity=group_entity,
-                    message=text,
-                    formatting_entities=telethon_entities,  # было entities
-                    parse_mode=None
-                )
-                logger.info("✅ Отправлено с сущностями")
-                return True, None
-            except Exception as e:
-                logger.error(f"❌ Ошибка отправки с сущностями: {e}")
-                try:
-                    await client.send_message(
-                        entity=group_entity,
-                        message=text,
-                        parse_mode='html'
-                    )
-                    logger.info("✅ Отправлено без сущностей (HTML)")
-                    return True, None
-                except Exception as e2:
-                    logger.error(f"❌ Ошибка fallback: {e2}")
-                    return False, str(e2)
+        if media_id and media_type:
+            file = await bot.get_file(media_id)
+            file_bytes = await bot.download_file(file.file_path)
+            temp_file = f"temp_{datetime.now().timestamp()}.jpg"
+            with open(temp_file, "wb") as f:
+                f.write(file_bytes)
+            await client.send_file(
+                entity=group_entity,
+                file=temp_file,
+                caption=text if text else None,
+                parse_mode='html'
+            )
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
         else:
-            if media_id and media_type:
-                file = await bot.get_file(media_id)
-                file_bytes = await bot.download_file(file.file_path)
-                temp_file = f"temp_{datetime.now().timestamp()}.jpg"
-                with open(temp_file, "wb") as f:
-                    f.write(file_bytes)
-                await client.send_file(
-                    entity=group_entity,
-                    file=temp_file,
-                    caption=text if text else None,
-                    parse_mode='html'
-                )
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-            else:
-                await client.send_message(
-                    entity=group_entity,
-                    message=text,
-                    parse_mode='html'
-                )
-            logger.info("✅ Отправлено обычное сообщение")
-            return True, None
+            await client.send_message(
+                entity=group_entity,
+                message=text,
+                parse_mode='html'
+            )
+        logger.info("✅ Отправлено через HTML")
+        return True, None
 
     except FloodWaitError as e:
         return False, f"FloodWait: {e.seconds} сек."
@@ -306,7 +235,7 @@ async def send_message_to_group(client, group_entity, message_data: dict):
         logger.error(f"❌ RPCError: {e}")
         return False, str(e)
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка отправки: {e}", exc_info=True)
         return False, str(e)
 
 async def mailing_task(user_id: int):
@@ -412,10 +341,6 @@ async def mailing_task(user_id: int):
         user_mailing_settings[user_id] = settings
         user_mailing_stats[user_id] = stats
         save_mailing_data()
-
-# ====================================================================
-# ОБРАБОТЧИКИ (ВСЕ ХЕНДЛЕРЫ)
-# ====================================================================
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
@@ -733,7 +658,6 @@ async def back_to_panel_callback(callback: CallbackQuery, state: FSMContext):
     is_active = user_mailing_settings[user_id].get("is_active", False)
     await callback.message.edit_text(panel_text, reply_markup=get_mailing_panel_kb(is_active))
 
-# ====== ТЕКСТ СООБЩЕНИЯ ======
 @router.message(F.text == "📝 Текст сообщения")
 async def cmd_text_message(message: Message, state: FSMContext):
     await state.set_state(TextMessageStates.choosing_type)
@@ -1016,26 +940,39 @@ async def go_home_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("Выберите раздел 👇", reply_markup=main_menu_kb)
 
 # ====== НАСТРОЙКА ГРУПП ======
-@router.message(F.text == "👥 Настройка групп")
-async def groups_menu(message: Message, state: FSMContext):
-    await state.set_state(GroupStates.main)
-    user_id = message.from_user.id
+@router.callback_query(GroupStates.main, lambda c: c.data == "groups_list")
+async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
     settings = user_mailing_settings.get(user_id, {})
-    if not settings.get("groups_list"):
-        settings["groups_list"] = []
-        user_mailing_settings[user_id] = settings
-        save_mailing_data()
     selected_groups = settings.get("groups_list", [])
-    if selected_groups:
-        groups_text = "\n".join([f"• {g.get('title', 'Без названия')} 👥 {g.get('participants_count', 0)}" for g in selected_groups])
-    else:
-        groups_text = "Не настроено"
-    await message.answer(
-        f"👥 <b>Настройка групп</b>\n\n"
-        f"📋 Выбранные группы:\n{groups_text}\n\n"
-        "Выберите действие 👇",
-        reply_markup=get_groups_kb()
+
+    if not selected_groups:
+        await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
+        return
+
+    # Сохраняем список во временное хранилище для пагинации
+    temp_groups_data[user_id] = {'groups': selected_groups, 'page': 0}
+    kb = build_groups_list_inline(selected_groups, 0)
+    await callback.message.edit_text(
+        "📋 <b>Ваши выбранные группы:</b>\n\n"
+        "Нажмите на группу, чтобы удалить её из списка.\n"
+        f"Всего: {len(selected_groups)} групп",
+        reply_markup=kb
     )
+
+@router.callback_query(lambda c: c.data.startswith('list_page_'))
+async def list_page_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+    page = int(callback.data.split('_')[2])
+    data = temp_groups_data.get(user_id)
+    if not data:
+        await callback.message.edit_text("Сессия истекла. Начните заново.", reply_markup=get_groups_kb())
+        return
+    groups = data.get('groups', [])
+    kb = build_groups_list_inline(groups, page)
+    await callback.message.edit_reply_markup(reply_markup=kb)
 
 @router.callback_query(GroupStates.main, lambda c: c.data == "groups_list")
 async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
@@ -1047,6 +984,69 @@ async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
     if not selected_groups:
         await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
         return
+
+    # Сохраняем список во временное хранилище для пагинации
+    temp_groups_data[user_id] = {'groups': selected_groups, 'page': 0}
+    kb = build_groups_list_inline(selected_groups, 0)  # per_page по умолчанию 18
+    await callback.message.edit_text(
+        "📋 <b>Ваши выбранные группы:</b>\n\n"
+        "Нажмите на группу, чтобы удалить её из списка.\n"
+        f"Всего: {len(selected_groups)} групп",
+        reply_markup=kb
+    )
+
+@router.callback_query(lambda c: c.data.startswith('list_page_'))
+async def list_page_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+    page = int(callback.data.split('_')[2])
+    data = temp_groups_data.get(user_id)
+    if not data:
+        await callback.message.edit_text("Сессия истекла. Начните заново.", reply_markup=get_groups_kb())
+        return
+    groups = data.get('groups', [])
+    kb = build_groups_list_inline(groups, page)  # per_page=18 по умолчанию
+    await callback.message.edit_reply_markup(reply_markup=kb)
+
+@router.callback_query(lambda c: c.data.startswith('remove_group_'))
+async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+    group_id = int(callback.data.split('_')[2])
+
+    settings = user_mailing_settings.get(user_id, {})
+    groups = settings.get("groups_list", [])
+
+    group_to_remove = None
+    for g in groups:
+        if g['id'] == group_id:
+            group_to_remove = g
+            break
+
+    if not group_to_remove:
+        await callback.message.edit_text("❌ Группа не найдена.", reply_markup=get_groups_kb())
+        return
+
+    groups.remove(group_to_remove)
+    settings["groups_list"] = groups
+    settings["groups_count"] = len(groups)
+    user_mailing_settings[user_id] = settings
+    save_mailing_data()
+
+    # Обновляем временное хранилище
+    data = temp_groups_data.get(user_id)
+    if data:
+        data['groups'] = groups
+        temp_groups_data[user_id] = data
+        if not groups:
+            del temp_groups_data[user_id]
+            await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
+            return
+
+    # Перерисовываем текущую страницу
+    current_page = data.get('page', 0) if data else 0
+    kb = build_groups_list_inline(groups, current_page)  # per_page=18
+    await callback.message.edit_reply_markup(reply_markup=kb)
 
     buttons = []
     for g in selected_groups:
@@ -1145,6 +1145,17 @@ async def groups_add_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("❌ Сначала добавьте профиль в разделе «Профили».", reply_markup=get_groups_kb())
         return
     client = sessions[0]
+
+    # Проверяем, подключён ли клиент
+    try:
+        if not client.is_connected():
+            await client.connect()
+            logger.info("🔁 Клиент переподключен для загрузки групп")
+    except Exception as e:
+        await loading_msg.delete()
+        await callback.message.edit_text(f"❌ Ошибка подключения: {str(e)}\nПопробуйте позже.", reply_markup=get_groups_kb())
+        return
+
     try:
         dialogs = await client.get_dialogs()
         groups = []

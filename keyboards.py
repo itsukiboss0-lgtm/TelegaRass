@@ -292,3 +292,37 @@ def build_groups_inline(groups_list: list, page: int = 0, per_page: int = 9) -> 
     ]
     buttons.append(action_buttons)
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def build_groups_list_inline(groups_list: list, page: int = 0, per_page: int = 18) -> InlineKeyboardMarkup:
+    """
+    Создаёт inline-клавиатуру для списка выбранных групп с пагинацией.
+    per_page = 18 групп на страницу (6 рядов по 3 кнопки)
+    """
+    total = len(groups_list)
+    start = page * per_page
+    end = min(start + per_page, total)
+    buttons = []
+    row = []
+    for idx, group in enumerate(groups_list[start:end]):
+        title = group.get('title', 'Без названия')
+        participants = group.get('participants_count', 0)
+        text = f"🗑 {title} ({participants})"
+        callback_data = f"remove_group_{group.get('id')}"
+        row.append(InlineKeyboardButton(text=text, callback_data=callback_data))
+        if len(row) == 3:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="◀️", callback_data=f"list_page_{page-1}"))
+    if end < total:
+        nav_buttons.append(InlineKeyboardButton(text="▶️", callback_data=f"list_page_{page+1}"))
+    if nav_buttons:
+        buttons.append(nav_buttons)
+
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_groups_menu")])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
