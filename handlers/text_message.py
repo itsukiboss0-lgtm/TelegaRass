@@ -10,13 +10,6 @@ from aiogram.fsm.context import FSMContext
 from telethon import TelegramClient
 from telethon.tl.types import Channel, Chat
 from telethon.errors import RPCError, FloodWaitError
-from telethon.tl.types import (
-    MessageEntityBold, MessageEntityItalic, MessageEntityCode,
-    MessageEntityPre, MessageEntityTextUrl, MessageEntityUrl,
-    MessageEntityEmail, MessageEntityMention, MessageEntityHashtag,
-    MessageEntityCashtag, MessageEntityPhone, MessageEntityUnderline,
-    MessageEntityStrike, MessageEntityBlockquote, MessageEntityCustomEmoji
-)
 
 from config import DATA_FILE, BOT_USERNAME, BOT_TOKEN
 from states import TextMessageStates, MailingStates, GroupStates
@@ -171,13 +164,16 @@ def get_signature(user_id: int) -> str:
     # Подпись больше не добавляется
     return ""
 
+# ======= ИСПРАВЛЕННАЯ ФУНКЦИЯ (сохраняет HTML-текст) =======
 def extract_message_data(message: Message) -> dict:
     data = {}
-    data["text"] = message.text or ""
-    if message.entities:
-        data["entities"] = message.entities
+    # Сохраняем HTML-текст (он содержит теги <tg-emoji> для кастомных эмодзи)
+    if message.html_text:
+        data["text"] = message.html_text
     else:
-        data["entities"] = []
+        data["text"] = message.text or ""
+    # Сущности больше не нужны, оставим для совместимости
+    data["entities"] = []
 
     if message.photo:
         data["media"] = message.photo[-1].file_id
@@ -206,57 +202,15 @@ def extract_message_data(message: Message) -> dict:
     data["buttons"] = []
     return data
 
-def convert_entities(entities, text: str):
-    result = []
-    for ent in entities:
-        offset = ent.offset
-        length = ent.length
-        if ent.type == "bold":
-            result.append(MessageEntityBold(offset=offset, length=length))
-        elif ent.type == "italic":
-            result.append(MessageEntityItalic(offset=offset, length=length))
-        elif ent.type == "code":
-            result.append(MessageEntityCode(offset=offset, length=length))
-        elif ent.type == "pre":
-            result.append(MessageEntityPre(offset=offset, length=length, language=ent.language or ""))
-        elif ent.type == "text_link":
-            result.append(MessageEntityTextUrl(offset=offset, length=length, url=ent.url))
-        elif ent.type == "url":
-            result.append(MessageEntityUrl(offset=offset, length=length))
-        elif ent.type == "email":
-            result.append(MessageEntityEmail(offset=offset, length=length))
-        elif ent.type == "mention":
-            result.append(MessageEntityMention(offset=offset, length=length))
-        elif ent.type == "hashtag":
-            result.append(MessageEntityHashtag(offset=offset, length=length))
-        elif ent.type == "cashtag":
-            result.append(MessageEntityCashtag(offset=offset, length=length))
-        elif ent.type == "phone":
-            result.append(MessageEntityPhone(offset=offset, length=length))
-        elif ent.type == "underline":
-            result.append(MessageEntityUnderline(offset=offset, length=length))
-        elif ent.type == "strikethrough":
-            result.append(MessageEntityStrike(offset=offset, length=length))
-        elif ent.type == "blockquote":
-            result.append(MessageEntityBlockquote(offset=offset, length=length))
-        elif ent.type == "custom_emoji":
-            result.append(MessageEntityCustomEmoji(offset=offset, length=length, document_id=ent.custom_emoji_id))
-    return result
-
-
+# ======= ИСПРАВЛЕННАЯ ФУНКЦИЯ (отправка через HTML) =======
 async def send_message_to_group(client, group_entity, message_data: dict):
     try:
         text = message_data.get("text", "")
         media_type = message_data.get("media_type")
         media_id = message_data.get("media")
-        entities = message_data.get("entities", [])
-
-        # Логируем информацию о сообщении
-        logger.info(
-            f"Отправка в группу {group_entity.id}: текст='{text[:50]}...', медиа={media_type}, сущности={len(entities)}")
 
         if media_id and media_type:
-            # Отправка медиа (фото, видео и т.д.)
+            # Отправка медиа с caption (HTML)
             file = await bot.get_file(media_id)
             file_bytes = await bot.download_file(file.file_path)
             temp_file = f"temp_{datetime.now().timestamp()}.jpg"
@@ -271,42 +225,22 @@ async def send_message_to_group(client, group_entity, message_data: dict):
             if os.path.exists(temp_file):
                 os.remove(temp_file)
         else:
-            # Текстовое сообщение
-            if entities:
-                # Если текст пустой, но есть сущности – создаём фиктивный текст
-                if not text:
-                    # Для кастомных эмодзи в тексте должен быть хотя бы один символ.
-                    # Telegram сам заменяет его на эмодзи при наличии сущности.
-                    text = " "  # пробел как заглушка
-                    # Но это не идеально. Лучше использовать оригинальный текст из сообщения.
-                    # В aiogram message.text для кастомных эмодзи содержит символ, так что text не должен быть пустым.
-                    logger.warning("Текст пустой, но есть сущности. Используем пробел как заглушку.")
-
-                telethon_entities = convert_entities(entities, text)
-                logger.info(f"Отправка с сущностями: {telethon_entities}")
-                await client.send_message(
-                    entity=group_entity,
-                    message=text,
-                    entities=telethon_entities,
-                    parse_mode=None
-                )
-            else:
-                await client.send_message(
-                    entity=group_entity,
-                    message=text,
-                    parse_mode='html'
-                )
+            # Текстовое сообщение – отправляем HTML
+            await client.send_message(
+                entity=group_entity,
+                message=text,
+                parse_mode='html'
+            )
         return True, None
     except FloodWaitError as e:
-        logger.warning(f"FloodWait: {e.seconds} сек.")
         return False, f"FloodWait: {e.seconds} сек."
     except RPCError as e:
-        logger.error(f"RPCError: {e}")
         return False, str(e)
     except Exception as e:
         logger.error(f"Ошибка отправки: {e}", exc_info=True)
         return False, str(e)
 
+# ====== Остальной код без изменений ======
 async def mailing_task(user_id: int):
     settings = user_mailing_settings.get(user_id, {})
     stats = user_mailing_stats.get(user_id, {})
