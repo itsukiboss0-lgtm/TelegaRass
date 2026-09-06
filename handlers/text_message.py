@@ -243,6 +243,7 @@ def convert_entities(entities, text: str):
             result.append(MessageEntityCustomEmoji(offset=offset, length=length, document_id=ent.custom_emoji_id))
     return result
 
+
 async def send_message_to_group(client, group_entity, message_data: dict):
     try:
         text = message_data.get("text", "")
@@ -250,7 +251,12 @@ async def send_message_to_group(client, group_entity, message_data: dict):
         media_id = message_data.get("media")
         entities = message_data.get("entities", [])
 
+        # Логируем информацию о сообщении
+        logger.info(
+            f"Отправка в группу {group_entity.id}: текст='{text[:50]}...', медиа={media_type}, сущности={len(entities)}")
+
         if media_id and media_type:
+            # Отправка медиа (фото, видео и т.д.)
             file = await bot.get_file(media_id)
             file_bytes = await bot.download_file(file.file_path)
             temp_file = f"temp_{datetime.now().timestamp()}.jpg"
@@ -265,8 +271,19 @@ async def send_message_to_group(client, group_entity, message_data: dict):
             if os.path.exists(temp_file):
                 os.remove(temp_file)
         else:
+            # Текстовое сообщение
             if entities:
+                # Если текст пустой, но есть сущности – создаём фиктивный текст
+                if not text:
+                    # Для кастомных эмодзи в тексте должен быть хотя бы один символ.
+                    # Telegram сам заменяет его на эмодзи при наличии сущности.
+                    text = " "  # пробел как заглушка
+                    # Но это не идеально. Лучше использовать оригинальный текст из сообщения.
+                    # В aiogram message.text для кастомных эмодзи содержит символ, так что text не должен быть пустым.
+                    logger.warning("Текст пустой, но есть сущности. Используем пробел как заглушку.")
+
                 telethon_entities = convert_entities(entities, text)
+                logger.info(f"Отправка с сущностями: {telethon_entities}")
                 await client.send_message(
                     entity=group_entity,
                     message=text,
@@ -281,11 +298,13 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                 )
         return True, None
     except FloodWaitError as e:
+        logger.warning(f"FloodWait: {e.seconds} сек.")
         return False, f"FloodWait: {e.seconds} сек."
     except RPCError as e:
+        logger.error(f"RPCError: {e}")
         return False, str(e)
     except Exception as e:
-        logger.error(f"Ошибка отправки: {e}")
+        logger.error(f"Ошибка отправки: {e}", exc_info=True)
         return False, str(e)
 
 async def mailing_task(user_id: int):
