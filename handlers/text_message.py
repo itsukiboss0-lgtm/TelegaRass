@@ -1033,6 +1033,7 @@ async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
         return
 
+    # Каждая группа — одна кнопка с названием (удаление по нажатию)
     buttons = []
     for g in selected_groups:
         title = g.get('title', 'Без названия')
@@ -1077,6 +1078,7 @@ async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
     user_mailing_settings[user_id] = settings
     save_mailing_data()
 
+    # Перерисовываем список
     if not groups:
         await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
         return
@@ -1121,8 +1123,13 @@ async def back_to_groups_menu_callback(callback: CallbackQuery, state: FSMContex
 async def groups_add_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     user_id = callback.from_user.id
+
+    # Сообщение о загрузке
+    loading_msg = await callback.message.answer("⏳ Загружаем группы, пожалуйста, подождите...")
+
     sessions = accounts_module.user_sessions.get(user_id, [])
     if not sessions:
+        await loading_msg.delete()
         await callback.message.edit_text("❌ Сначала добавьте профиль в разделе «Профили».", reply_markup=get_groups_kb())
         return
     client = sessions[0]
@@ -1142,12 +1149,14 @@ async def groups_add_callback(callback: CallbackQuery, state: FSMContext):
                         'title': title,
                         'participants_count': participants_count
                     })
+        await loading_msg.delete()
         if not groups:
             await callback.message.edit_text("📭 У вас нет групп (только каналы или пусто).", reply_markup=get_groups_kb())
             return
         temp_groups_data[user_id] = {'groups': groups, 'page': 0}
         await show_groups_page_callback(callback, state, user_id, 0)
     except Exception as e:
+        await loading_msg.delete()
         await callback.message.edit_text(f"❌ Ошибка при загрузке групп: {str(e)}\nПопробуйте позже.", reply_markup=get_groups_kb())
 
 async def show_groups_page_callback(callback: CallbackQuery, state: FSMContext, user_id: int, page: int):
