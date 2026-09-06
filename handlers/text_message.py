@@ -170,14 +170,11 @@ def get_stats_text(user_id: int) -> str:
 def get_signature(user_id: int) -> str:
     return ""
 
-# ===================== ГЛАВНЫЕ ФУНКЦИИ =====================
 def extract_message_data(message: Message) -> dict:
     data = {}
-    # Сохраняем текст и сущности
     data["text"] = message.text or ""
     data["entities"] = message.entities if message.entities else []
 
-    # Медиа
     if message.photo:
         data["media"] = message.photo[-1].file_id
         data["media_type"] = "photo"
@@ -206,7 +203,6 @@ def extract_message_data(message: Message) -> dict:
     return data
 
 def convert_entities(entities, text: str):
-    """Конвертирует aiogram MessageEntity в telethon MessageEntity"""
     result = []
     for ent in entities:
         offset = ent.offset
@@ -240,7 +236,6 @@ def convert_entities(entities, text: str):
         elif ent.type == "blockquote":
             result.append(MessageEntityBlockquote(offset=offset, length=length))
         elif ent.type == "custom_emoji":
-            # Ключевой момент: передаём document_id
             result.append(MessageEntityCustomEmoji(offset=offset, length=length, document_id=ent.custom_emoji_id))
     return result
 
@@ -251,14 +246,12 @@ async def send_message_to_group(client, group_entity, message_data: dict):
         media_id = message_data.get("media")
         entities = message_data.get("entities", [])
 
-        # Детальное логирование
         logger.info(f"📤 Отправка в группу {group_entity.id}")
         logger.info(f"📝 Текст: {text[:100] if text else '(пусто)'}")
         logger.info(f"📎 Медиа: {media_type}")
         logger.info(f"🧩 Сущностей: {len(entities)}")
 
         if entities:
-            # Если есть сущности, пробуем отправить с ними
             try:
                 telethon_entities = convert_entities(entities, text)
                 logger.info(f"🔧 Преобразовано {len(telethon_entities)} сущностей")
@@ -272,7 +265,6 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                 return True, None
             except Exception as e:
                 logger.error(f"❌ Ошибка отправки с сущностями: {e}")
-                # Fallback: пробуем отправить без сущностей (HTML)
                 try:
                     await client.send_message(
                         entity=group_entity,
@@ -285,7 +277,6 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                     logger.error(f"❌ Ошибка fallback: {e2}")
                     return False, str(e2)
         else:
-            # Нет сущностей – обычная отправка
             if media_id and media_type:
                 file = await bot.get_file(media_id)
                 file_bytes = await bot.download_file(file.file_path)
@@ -318,7 +309,6 @@ async def send_message_to_group(client, group_entity, message_data: dict):
         logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
         return False, str(e)
 
-# ====== ОСТАЛЬНОЙ КОД (без изменений) ======
 async def mailing_task(user_id: int):
     settings = user_mailing_settings.get(user_id, {})
     stats = user_mailing_stats.get(user_id, {})
@@ -423,7 +413,10 @@ async def mailing_task(user_id: int):
         user_mailing_stats[user_id] = stats
         save_mailing_data()
 
-# ====== Обработчики (все остальные, без изменений) ======
+# ====================================================================
+# ОБРАБОТЧИКИ (ВСЕ ХЕНДЛЕРЫ)
+# ====================================================================
+
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -1376,4 +1369,4 @@ async def back_to_main_global(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
     await callback.message.edit_text("⬅️ Возврат в главное меню.")
-    await callback.message.answer("Выберите раздел 👇", reply_markup=main_menu_kb)Обработчики
+    await callback.message.answer("Выберите раздел 👇", reply_markup=main_menu_kb)
