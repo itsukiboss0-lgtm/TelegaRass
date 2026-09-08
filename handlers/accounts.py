@@ -33,16 +33,6 @@ from keyboards import (
     get_cancel_2fa_kb
 )
 
-# Импортируем данные из других модулей для очистки
-from handlers.text_message import (
-    user_mailing_settings,
-    user_mailing_stats,
-    user_mailing_tasks,
-    user_sent_messages,
-    save_mailing_data
-)
-from handlers.tariffs import user_subscriptions, user_referrals, save_referral_data
-
 logger = logging.getLogger(__name__)
 router = Router()
 
@@ -74,6 +64,7 @@ def load_accounts_data():
     else:
         user_accounts = {}
 
+    # Инициализируем сессии без проверки авторизации (проверка будет при использовании)
     user_sessions = {}
     for user_id, accounts in list(user_accounts.items()):
         user_sessions[user_id] = []
@@ -82,22 +73,12 @@ def load_accounts_data():
             if session_path and os.path.exists(session_path):
                 try:
                     client = TelegramClient(session_path, API_ID, API_HASH)
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        authorized = loop.run_until_complete(check_client(client))
-                    finally:
-                        loop.close()
-                    if authorized:
-                        user_sessions[user_id].append(client)
-                        acc["client"] = client
-                        logger.info(f"✅ Сессия восстановлена для {acc.get('phone')}")
-                    else:
-                        logger.warning(f"⚠️ Клиент не авторизован: {acc.get('phone')}, удаляем")
-                        accounts.remove(acc)
-                        save_accounts_data()
+                    # Не подключаемся сразу, клиент будет подключен при первой отправке
+                    user_sessions[user_id].append(client)
+                    acc["client"] = client
+                    logger.info(f"✅ Сессия загружена для {acc.get('phone')}")
                 except Exception as e:
-                    logger.error(f"❌ Ошибка восстановления клиента для {acc.get('phone')}: {e}")
+                    logger.error(f"❌ Ошибка загрузки клиента для {acc.get('phone')}: {e}")
                     if acc in accounts:
                         accounts.remove(acc)
                         save_accounts_data()
@@ -124,14 +105,28 @@ def get_unique_session_path(user_id: int, phone: str) -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"sessions/user_{user_id}_{phone}_{timestamp}.session"
 
-# =================== ОЧИСТКА ДАННЫХ ПОЛЬЗОВАТЕЛЯ ===================
-def clear_user_data(user_id: int):
+# =================== ОЧИСТКА ДАННЫХ ПОЛЬЗОВАТЕЛЯ (АСИНХРОННАЯ) ===================
+async def clear_user_data(user_id: int):
     """Удаляет все данные пользователя: настройки, статистику, задачи, подписки, рефералов"""
+    # Локальные импорты для избежания циклической зависимости
+    from handlers.text_message import (
+        user_mailing_settings,
+        user_mailing_stats,
+        user_mailing_tasks,
+        user_sent_messages,
+        save_mailing_data
+    )
+    from handlers.tariffs import user_subscriptions, user_referrals, save_referral_data
+
     # Останавливаем задачи рассылки
     if user_id in user_mailing_tasks:
         task = user_mailing_tasks[user_id]
         if task and not task.done():
             task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         del user_mailing_tasks[user_id]
 
     # Удаляем настройки рассылки
@@ -536,8 +531,8 @@ async def confirm_delete_callback(callback: CallbackQuery, state: FSMContext):
             if user_id in user_sessions:
                 user_sessions[user_id] = [c for c in user_sessions[user_id] if c != client]
 
-        # ===== ОЧИСТКА ВСЕХ ДАННЫХ ПОЛЬЗОВАТЕЛЯ =====
-        clear_user_data(user_id)
+        # ===== ОЧИСТКА ВСЕХ ДАННЫХ ПОЛЬЗОВАТЕЛЯ (АСИНХРОННАЯ) =====
+        await clear_user_data(user_id)
 
         # Сохраняем изменения
         save_accounts_data()
@@ -563,7 +558,7 @@ async def cancel_delete_callback(callback: CallbackQuery, state: FSMContext):
     text += f"\nℹ️ На обычном тарифе доступен только 1 профиль"
     await callback.message.edit_text(text, reply_markup=get_accounts_kb())
 
-# =================== QR-ВХОД (без изменений) ===================
+# =================== QR-ВХОД ===================
 @router.callback_query(AccountStates.adding_phone, lambda c: c.data == "qr_login")
 async def qr_login_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
