@@ -17,6 +17,7 @@ def get_menu_text_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📨 Обычное", callback_data="type_ordinary")],
         [InlineKeyboardButton(text="🔄 Разные", callback_data="type_multiple")],
         [InlineKeyboardButton(text="🔗 С кнопками", callback_data="type_buttons")],
+        [InlineKeyboardButton(text="📤 Пересылка", callback_data="type_forward")],  # НОВАЯ КНОПКА
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
     ])
 

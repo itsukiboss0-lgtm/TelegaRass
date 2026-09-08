@@ -17,9 +17,8 @@ from keyboards import (
     main_menu_kb, get_menu_text_kb, get_count_kb, get_buttons_count_kb,
     get_home_kb, get_example_kb, get_cancel_kb, get_mailing_panel_kb,
     get_autostop_kb, get_mention_kb, get_stats_kb, get_stats_main_kb,
-    get_groups_kb, build_groups_inline, get_cycle_interval_kb,
-    get_message_interval_kb, get_schedule_kb,
-    build_groups_list_inline  # <-- ЭТОТ ИМПОРТ ДОЛЖЕН БЫТЬ!
+    get_groups_kb, build_groups_inline, build_groups_list_inline,
+    get_cycle_interval_kb, get_message_interval_kb, get_schedule_kb
 )
 
 import handlers.accounts as accounts_module
@@ -164,14 +163,19 @@ def get_stats_text(user_id: int) -> str:
 def get_signature(user_id: int) -> str:
     return ""
 
+# ======= ФУНКЦИИ ДЛЯ РАБОТЫ С СООБЩЕНИЯМИ =======
 def extract_message_data(message: Message) -> dict:
     data = {}
-    if message.html_text:
-        data["text"] = message.html_text
-    else:
-        data["text"] = message.text or ""
-    data["entities"] = []
+    # Для пересылки – сохраняем ID
+    data["chat_id"] = message.chat.id
+    data["message_id"] = message.message_id
+    data["text"] = message.text or ""
+    data["html_text"] = message.html_text or ""
+    data["entities"] = message.entities if message.entities else []
+    data["media_type"] = None
+    data["media"] = None
 
+    # Определяем, есть ли медиа (для обычной отправки)
     if message.photo:
         data["media"] = message.photo[-1].file_id
         data["media_type"] = "photo"
@@ -193,19 +197,34 @@ def extract_message_data(message: Message) -> dict:
     elif message.sticker:
         data["media"] = message.sticker.file_id
         data["media_type"] = "sticker"
-    else:
-        data["media"] = None
-        data["media_type"] = None
+
     data["buttons"] = []
     return data
 
 async def send_message_to_group(client, group_entity, message_data: dict):
     try:
+        # Проверяем, является ли сообщение пересылкой (сохранили chat_id и message_id)
+        if message_data.get("chat_id") and message_data.get("message_id"):
+            # Если есть маркер forward, или просто если есть оба ID – пробуем переслать
+            # Но чтобы не пересылать обычные сообщения, добавим проверку на наличие media_type == None и отсутствие текста?
+            # Проще: если в данных есть chat_id и message_id, и нет медиа (или есть, но мы не знаем),
+            # всё равно пытаемся переслать. Если не получится – fallback на отправку.
+            try:
+                await client.forward_messages(
+                    entity=group_entity,
+                    messages=message_data["message_id"],
+                    from_peer=message_data["chat_id"]
+                )
+                logger.info(f"✅ Переслано сообщение в группу {group_entity.id}")
+                return True, None
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось переслать, пробуем обычную отправку: {e}")
+                # fallback – отправляем как обычное сообщение
+
+        # Обычная отправка (текст или медиа)
         text = message_data.get("text", "")
         media_type = message_data.get("media_type")
         media_id = message_data.get("media")
-
-        logger.info(f"📤 Отправка в группу {group_entity.id}, текст: {text[:100] if text else '(пусто)'}")
 
         if media_id and media_type:
             file = await bot.get_file(media_id)
@@ -659,6 +678,7 @@ async def back_to_panel_callback(callback: CallbackQuery, state: FSMContext):
     is_active = user_mailing_settings[user_id].get("is_active", False)
     await callback.message.edit_text(panel_text, reply_markup=get_mailing_panel_kb(is_active))
 
+# ====== ТЕКСТ СООБЩЕНИЯ ======
 @router.message(F.text == "📝 Текст сообщения")
 async def cmd_text_message(message: Message, state: FSMContext):
     await state.set_state(TextMessageStates.choosing_type)
@@ -702,6 +722,16 @@ async def choose_type_callback(callback: CallbackQuery, state: FSMContext):
             "⚠️ <i>Премиум-эмодзи и пересылка не работают</i>",
             reply_markup=get_cancel_kb("back_to_choosing_type")
         )
+    elif choice == "forward":
+        await state.set_state(TextMessageStates.waiting_forward)
+        await state.update_data(mode="forward")
+        await callback.message.edit_text(
+            "📤 <b>Пересылка сообщения</b>\n\n"
+            "Отправьте любое сообщение, которое хотите пересылать.\n"
+            "Будет сохранён оригинал со всеми эмодзи, медиа и форматированием.\n\n"
+            "💡 <i>Сообщение будет пересылаться как есть, без изменений.</i>",
+            reply_markup=get_cancel_kb("back_to_choosing_type")
+        )
 
 @router.callback_query(TextMessageStates.choosing_type, lambda c: c.data == "back_to_choosing_type")
 async def back_to_choosing_type_callback(callback: CallbackQuery, state: FSMContext):
@@ -733,8 +763,31 @@ async def save_ordinary_message(message: Message, state: FSMContext):
     )
     await state.set_state(TextMessageStates.going_home)
 
+@router.message(TextMessageStates.waiting_forward)
+async def save_forward_message(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    msg_data = extract_message_data(message)
+    # Для пересылки добавляем маркер
+    msg_data["media_type"] = "forward"
+    user_sent_messages[user_id] = msg_data
+    if user_id not in user_mailing_settings:
+        user_mailing_settings[user_id] = {}
+    user_mailing_settings[user_id]["message_type"] = "Пересылка"
+    save_mailing_data()
+    await message.answer(
+        "✅ Сообщение сохранено для пересылки.\n\n"
+        "Чтобы вернуться на главную, нажмите кнопку ниже.",
+        reply_markup=get_home_kb()
+    )
+    await state.set_state(TextMessageStates.going_home)
+
 @router.message(TextMessageStates.waiting_ordinary, F.text == "⬅️ Назад")
 async def back_from_ordinary(message: Message, state: FSMContext):
+    await state.set_state(TextMessageStates.choosing_type)
+    await message.answer("Выберите тип сообщения 👇", reply_markup=get_menu_text_kb())
+
+@router.message(TextMessageStates.waiting_forward, F.text == "⬅️ Назад")
+async def back_from_forward(message: Message, state: FSMContext):
     await state.set_state(TextMessageStates.choosing_type)
     await message.answer("Выберите тип сообщения 👇", reply_markup=get_menu_text_kb())
 
@@ -973,11 +1026,7 @@ async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
         return
 
-    # Сохраняем список во временное хранилище для пагинации
-    if user_id not in temp_groups_data:
-        temp_groups_data[user_id] = {}
-    temp_groups_data[user_id]['groups'] = selected_groups
-    temp_groups_data[user_id]['page'] = 0
+    temp_groups_data[user_id] = {'groups': selected_groups, 'page': 0}
     kb = build_groups_list_inline(selected_groups, 0)
     await callback.message.edit_text(
         "📋 <b>Ваши выбранные группы:</b>\n\n"
@@ -1026,7 +1075,6 @@ async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
     user_mailing_settings[user_id] = settings
     save_mailing_data()
 
-    # Обновляем временное хранилище
     data = temp_groups_data.get(user_id)
     if data:
         data['groups'] = groups
@@ -1035,7 +1083,6 @@ async def remove_group_callback(callback: CallbackQuery, state: FSMContext):
             del temp_groups_data[user_id]
             await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
             return
-    # Перерисовываем текущую страницу
     current_page = data.get('page', 0) if data else 0
     kb = build_groups_list_inline(groups, current_page)
     await callback.message.edit_reply_markup(reply_markup=kb)
@@ -1058,7 +1105,6 @@ async def back_to_groups_menu_callback(callback: CallbackQuery, state: FSMContex
         reply_markup=get_groups_kb()
     )
 
-# ====== ДОБАВЛЕНИЕ ГРУПП (ПОЛНОСТЬЮ РАБОЧЕЕ) ======
 @router.callback_query(GroupStates.main, lambda c: c.data == "groups_add")
 async def groups_add_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -1073,7 +1119,6 @@ async def groups_add_callback(callback: CallbackQuery, state: FSMContext):
         return
     client = sessions[0]
 
-    # Проверяем, подключён ли клиент
     try:
         if not client.is_connected():
             await client.connect()

@@ -11,6 +11,7 @@ class TextMessageStates(StatesGroup):
     waiting_button_url = State()
     showing_example = State()
     going_home = State()
+    waiting_forward = State()  # НОВОЕ СОСТОЯНИЕ
 
 class AccountStates(StatesGroup):
     main = State()
