@@ -166,18 +166,16 @@ def get_signature(user_id: int) -> str:
 # ======= ФУНКЦИИ ДЛЯ РАБОТЫ С СООБЩЕНИЯМИ =======
 def extract_message_data(message: Message) -> dict:
     data = {}
-    # Общие данные (для всех типов)
+    # Сохраняем текст и HTML
     data["text"] = message.text or ""
     data["html_text"] = message.html_text or ""
     data["entities"] = message.entities if message.entities else []
     data["buttons"] = []
     data["is_forward"] = False  # по умолчанию не пересылка
-
-    # ID сообщения и чата сохраняем всегда (для возможного использования)
     data["chat_id"] = message.chat.id
     data["message_id"] = message.message_id
 
-    # Медиа (для обычной отправки)
+    # Медиа для обычной отправки
     if message.photo:
         data["media"] = message.photo[-1].file_id
         data["media_type"] = "photo"
@@ -202,7 +200,6 @@ def extract_message_data(message: Message) -> dict:
     else:
         data["media"] = None
         data["media_type"] = None
-
     return data
 
 async def send_message_to_group(client, group_entity, message_data: dict):
@@ -218,9 +215,7 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                 logger.info(f"✅ Переслано сообщение в группу {group_entity.id}")
                 return True, None
             except Exception as e:
-                logger.warning(f"⚠️ Не удалось переслать, пробуем обычную отправку: {e}")
-                # fallback – отправляем как обычное сообщение (если возможно)
-                # но для пересылки лучше не продолжать, а вернуть ошибку
+                logger.error(f"❌ Ошибка пересылки: {e}")
                 return False, str(e)
 
         # Обычная отправка (текст или медиа)
@@ -750,9 +745,6 @@ async def back_to_choosing_type_callback(callback: CallbackQuery, state: FSMCont
 async def save_ordinary_message(message: Message, state: FSMContext):
     user_id = message.from_user.id
     msg_data = extract_message_data(message)
-    if not msg_data:
-        await message.answer("❌ Не удалось распознать сообщение. Попробуйте снова.")
-        return
     user_sent_messages[user_id] = msg_data
     if user_id not in user_mailing_settings:
         user_mailing_settings[user_id] = {}
@@ -769,10 +761,7 @@ async def save_ordinary_message(message: Message, state: FSMContext):
 async def save_forward_message(message: Message, state: FSMContext):
     user_id = message.from_user.id
     msg_data = extract_message_data(message)
-    # Устанавливаем флаг пересылки
     msg_data["is_forward"] = True
-    # Для пересылки не нужны медиа, т.к. они пересылаются вместе с сообщением
-    # но мы сохраняем chat_id и message_id
     user_sent_messages[user_id] = msg_data
     if user_id not in user_mailing_settings:
         user_mailing_settings[user_id] = {}
@@ -1025,7 +1014,6 @@ async def groups_list_callback(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     settings = user_mailing_settings.get(user_id, {})
     selected_groups = settings.get("groups_list", [])
-
     if not selected_groups:
         await callback.message.edit_text("📭 Вы пока не выбрали ни одной группы.", reply_markup=get_groups_kb())
         return
