@@ -166,16 +166,18 @@ def get_signature(user_id: int) -> str:
 # ======= ФУНКЦИИ ДЛЯ РАБОТЫ С СООБЩЕНИЯМИ =======
 def extract_message_data(message: Message) -> dict:
     data = {}
-    # Для пересылки – сохраняем ID
-    data["chat_id"] = message.chat.id
-    data["message_id"] = message.message_id
+    # Общие данные (для всех типов)
     data["text"] = message.text or ""
     data["html_text"] = message.html_text or ""
     data["entities"] = message.entities if message.entities else []
-    data["media_type"] = None
-    data["media"] = None
+    data["buttons"] = []
+    data["is_forward"] = False  # по умолчанию не пересылка
 
-    # Определяем, есть ли медиа (для обычной отправки)
+    # ID сообщения и чата сохраняем всегда (для возможного использования)
+    data["chat_id"] = message.chat.id
+    data["message_id"] = message.message_id
+
+    # Медиа (для обычной отправки)
     if message.photo:
         data["media"] = message.photo[-1].file_id
         data["media_type"] = "photo"
@@ -197,18 +199,16 @@ def extract_message_data(message: Message) -> dict:
     elif message.sticker:
         data["media"] = message.sticker.file_id
         data["media_type"] = "sticker"
+    else:
+        data["media"] = None
+        data["media_type"] = None
 
-    data["buttons"] = []
     return data
 
 async def send_message_to_group(client, group_entity, message_data: dict):
     try:
-        # Проверяем, является ли сообщение пересылкой (сохранили chat_id и message_id)
-        if message_data.get("chat_id") and message_data.get("message_id"):
-            # Если есть маркер forward, или просто если есть оба ID – пробуем переслать
-            # Но чтобы не пересылать обычные сообщения, добавим проверку на наличие media_type == None и отсутствие текста?
-            # Проще: если в данных есть chat_id и message_id, и нет медиа (или есть, но мы не знаем),
-            # всё равно пытаемся переслать. Если не получится – fallback на отправку.
+        # Проверяем, нужно ли переслать
+        if message_data.get("is_forward") and message_data.get("chat_id") and message_data.get("message_id"):
             try:
                 await client.forward_messages(
                     entity=group_entity,
@@ -219,7 +219,9 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                 return True, None
             except Exception as e:
                 logger.warning(f"⚠️ Не удалось переслать, пробуем обычную отправку: {e}")
-                # fallback – отправляем как обычное сообщение
+                # fallback – отправляем как обычное сообщение (если возможно)
+                # но для пересылки лучше не продолжать, а вернуть ошибку
+                return False, str(e)
 
         # Обычная отправка (текст или медиа)
         text = message_data.get("text", "")
@@ -767,8 +769,10 @@ async def save_ordinary_message(message: Message, state: FSMContext):
 async def save_forward_message(message: Message, state: FSMContext):
     user_id = message.from_user.id
     msg_data = extract_message_data(message)
-    # Для пересылки добавляем маркер
-    msg_data["media_type"] = "forward"
+    # Устанавливаем флаг пересылки
+    msg_data["is_forward"] = True
+    # Для пересылки не нужны медиа, т.к. они пересылаются вместе с сообщением
+    # но мы сохраняем chat_id и message_id
     user_sent_messages[user_id] = msg_data
     if user_id not in user_mailing_settings:
         user_mailing_settings[user_id] = {}
