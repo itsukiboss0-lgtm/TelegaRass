@@ -204,55 +204,39 @@ def extract_message_data(message: Message) -> dict:
 
 async def send_message_to_group(client, group_entity, message_data: dict):
     try:
-        # Проверяем, нужно ли переслать
-        if message_data.get("is_forward") and message_data.get("chat_id") and message_data.get("message_id"):
+        # Только пересылка
+        if message_data.get("is_forward") is True:
+            chat_id = message_data.get("chat_id")
+            message_id = message_data.get("message_id")
+            if not chat_id or not message_id:
+                logger.error("❌ Нет данных для пересылки")
+                return False, "Нет данных для пересылки"
+
+            # Проверяем существование сообщения
             try:
+                msg = await client.get_messages(chat_id, ids=message_id)
+                if not msg:
+                    logger.error(f"❌ Сообщение {message_id} не найдено в чате {chat_id}")
+                    return False, "Сообщение не найдено"
                 await client.forward_messages(
                     entity=group_entity,
-                    messages=message_data["message_id"],
-                    from_peer=message_data["chat_id"]
+                    messages=msg,
+                    from_peer=chat_id
                 )
-                logger.info(f"✅ Переслано сообщение в группу {group_entity.id}")
+                logger.info(f"✅ Переслано в группу {group_entity.id}")
                 return True, None
             except Exception as e:
                 logger.error(f"❌ Ошибка пересылки: {e}")
                 return False, str(e)
-
-        # Обычная отправка (текст или медиа)
-        text = message_data.get("text", "")
-        media_type = message_data.get("media_type")
-        media_id = message_data.get("media")
-
-        if media_id and media_type:
-            file = await bot.get_file(media_id)
-            file_bytes = await bot.download_file(file.file_path)
-            temp_file = f"temp_{datetime.now().timestamp()}.jpg"
-            with open(temp_file, "wb") as f:
-                f.write(file_bytes)
-            await client.send_file(
-                entity=group_entity,
-                file=temp_file,
-                caption=text if text else None,
-                parse_mode='html'
-            )
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
         else:
-            await client.send_message(
-                entity=group_entity,
-                message=text,
-                parse_mode='html'
-            )
-        logger.info("✅ Отправлено через HTML")
-        return True, None
+            # Если не пересылка – ничего не делаем (или можно отправить как обычное, но вы сказали без fallback)
+            logger.error("❌ Сообщение не помечено как пересылка")
+            return False, "Не пересылка"
 
     except FloodWaitError as e:
         return False, f"FloodWait: {e.seconds} сек."
-    except RPCError as e:
-        logger.error(f"❌ RPCError: {e}")
-        return False, str(e)
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка: {e}", exc_info=True)
         return False, str(e)
 
 async def mailing_task(user_id: int):
