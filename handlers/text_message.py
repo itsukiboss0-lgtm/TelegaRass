@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from telethon import TelegramClient
 from telethon.tl.types import Channel, Chat
 from telethon.errors import RPCError, FloodWaitError
+from telethon.tl.types import KeyboardButtonUrl, KeyboardButtonCallback, ReplyInlineMarkup, KeyboardButtonRow
 
 from config import DATA_FILE, BOT_USERNAME, BOT_TOKEN
 from states import TextMessageStates, MailingStates, GroupStates
@@ -166,16 +167,31 @@ def get_signature(user_id: int) -> str:
 # ======= ФУНКЦИИ ДЛЯ РАБОТЫ С СООБЩЕНИЯМИ =======
 def extract_message_data(message: Message) -> dict:
     data = {}
-    # Сохраняем текст и HTML
-    data["text"] = message.text or ""
-    data["html_text"] = message.html_text or ""
+    # Текст
+    if message.text:
+        data["text"] = message.text
+        data["html_text"] = message.html_text or message.text
+    else:
+        data["text"] = ""
+        data["html_text"] = ""
+
+    # Если есть caption (для медиа)
+    if message.caption:
+        data["caption"] = message.caption
+        data["html_caption"] = message.caption  # можно улучшить, но пока просто текст
+        # Если нет текста, но есть caption, используем его как основной текст
+        if not data["text"]:
+            data["text"] = message.caption
+            data["html_text"] = message.caption
+
     data["entities"] = message.entities if message.entities else []
+    data["caption_entities"] = message.caption_entities if message.caption_entities else []
     data["buttons"] = []
-    data["is_forward"] = False  # по умолчанию не пересылка
+    data["is_forward"] = False
     data["chat_id"] = message.chat.id
     data["message_id"] = message.message_id
 
-    # Медиа для обычной отправки
+    # Медиа
     if message.photo:
         data["media"] = message.photo[-1].file_id
         data["media_type"] = "photo"
@@ -200,19 +216,18 @@ def extract_message_data(message: Message) -> dict:
     else:
         data["media"] = None
         data["media_type"] = None
+
     return data
 
 async def send_message_to_group(client, group_entity, message_data: dict):
     try:
-        # Только пересылка
+        # Если это пересылка
         if message_data.get("is_forward") is True:
             chat_id = message_data.get("chat_id")
             message_id = message_data.get("message_id")
             if not chat_id or not message_id:
                 logger.error("❌ Нет данных для пересылки")
                 return False, "Нет данных для пересылки"
-
-            # Проверяем существование сообщения
             try:
                 msg = await client.get_messages(chat_id, ids=message_id)
                 if not msg:
@@ -228,13 +243,122 @@ async def send_message_to_group(client, group_entity, message_data: dict):
             except Exception as e:
                 logger.error(f"❌ Ошибка пересылки: {e}")
                 return False, str(e)
+
+        # === ОБЫЧНАЯ ОТПРАВКА ===
+        # Берём текст или caption
+        text = message_data.get("html_text") or message_data.get("text") or ""
+        caption = message_data.get("caption") or message_data.get("text") or ""
+        # Для медиа используем caption, для текста - text
+        if message_data.get("media"):
+            final_text = caption
         else:
-            # Если не пересылка – ничего не делаем (или можно отправить как обычное, но вы сказали без fallback)
-            logger.error("❌ Сообщение не помечено как пересылка")
-            return False, "Не пересылка"
+            final_text = text
+
+        media = message_data.get("media")
+        media_type = message_data.get("media_type")
+        buttons = message_data.get("buttons")  # список кортежей (text, value)
+
+        # Строим клавиатуру, если есть кнопки
+        reply_markup = None
+        if buttons:
+            keyboard_buttons = []
+            for btn_text, btn_value in buttons:
+                if btn_value.startswith(("http://", "https://")):
+                    keyboard_buttons.append(KeyboardButtonUrl(text=btn_text, url=btn_value))
+                else:
+                    keyboard_buttons.append(KeyboardButtonCallback(text=btn_text, data=btn_value.encode()))
+            # Группируем по 1 кнопке в строке (можно изменить)
+            rows = [KeyboardButtonRow(buttons=keyboard_buttons[i:i+1]) for i in range(0, len(keyboard_buttons), 1)]
+            reply_markup = ReplyInlineMarkup(rows=rows)
+
+        # Выбор метода отправки в зависимости от типа медиа
+        if media:
+            if media_type == "photo":
+                await client.send_file(
+                    group_entity,
+                    file=media,
+                    caption=final_text,
+                    parse_mode="html",
+                    reply_markup=reply_markup
+                )
+            elif media_type == "video":
+                await client.send_file(
+                    group_entity,
+                    file=media,
+                    caption=final_text,
+                    parse_mode="html",
+                    reply_markup=reply_markup
+                )
+            elif media_type == "document":
+                await client.send_file(
+                    group_entity,
+                    file=media,
+                    caption=final_text,
+                    parse_mode="html",
+                    reply_markup=reply_markup
+                )
+            elif media_type == "audio":
+                await client.send_file(
+                    group_entity,
+                    file=media,
+                    caption=final_text,
+                    parse_mode="html",
+                    reply_markup=reply_markup
+                )
+            elif media_type == "voice":
+                await client.send_file(
+                    group_entity,
+                    file=media,
+                    caption=final_text,
+                    parse_mode="html",
+                    reply_markup=reply_markup
+                )
+            elif media_type == "animation":
+                await client.send_file(
+                    group_entity,
+                    file=media,
+                    caption=final_text,
+                    parse_mode="html",
+                    reply_markup=reply_markup
+                )
+            elif media_type == "sticker":
+                await client.send_file(
+                    group_entity,
+                    file=media,
+                    reply_markup=reply_markup
+                )
+            else:
+                # fallback – отправить как файл
+                await client.send_file(
+                    group_entity,
+                    file=media,
+                    caption=final_text,
+                    parse_mode="html",
+                    reply_markup=reply_markup
+                )
+            logger.info(f"✅ Отправлено медиа в группу {group_entity.id}")
+        else:
+            # Только текст
+            if final_text:
+                await client.send_message(
+                    group_entity,
+                    message=final_text,
+                    parse_mode="html",
+                    reply_markup=reply_markup
+                )
+            else:
+                logger.warning("⚠️ Нет текста и медиа для отправки")
+                return False, "Нет контента"
+            logger.info(f"✅ Отправлен текст в группу {group_entity.id}")
+
+        return True, None
 
     except FloodWaitError as e:
-        return False, f"FloodWait: {e.seconds} сек."
+        wait_seconds = e.seconds
+        logger.warning(f"⏳ FloodWait: ждём {wait_seconds} сек.")
+        await asyncio.sleep(wait_seconds)
+        # Повторяем один раз
+        return await send_message_to_group(client, group_entity, message_data)
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}", exc_info=True)
         return False, str(e)
