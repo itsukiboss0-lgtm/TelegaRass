@@ -59,19 +59,21 @@ def get_mailing_panel_kb(is_active: bool) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⏹ Остановить", callback_data="stop_mailing"),
              InlineKeyboardButton(text="📊 Статистика", callback_data="show_stats")],
-            [InlineKeyboardButton(text="⏱ Авто-стоп", callback_data="autostop_menu"),
-             InlineKeyboardButton(text="🔔 Упоминания", callback_data="mention_menu")],
-            [InlineKeyboardButton(text="📅 Расписание", callback_data="schedule_mailing"),
-             InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
+            [InlineKeyboardButton(text="📊 Отчёты", callback_data="show_reports"),  # НОВАЯ КНОПКА
+             InlineKeyboardButton(text="⏱ Авто-стоп", callback_data="autostop_menu")],
+            [InlineKeyboardButton(text="🔔 Упоминания", callback_data="mention_menu"),
+             InlineKeyboardButton(text="📅 Расписание", callback_data="schedule_mailing")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
         ])
     else:
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="▶️ Запустить", callback_data="start_mailing"),
              InlineKeyboardButton(text="📊 Статистика", callback_data="show_stats")],
-            [InlineKeyboardButton(text="⏱ Авто-стоп", callback_data="autostop_menu"),
-             InlineKeyboardButton(text="🔔 Упоминания", callback_data="mention_menu")],
-            [InlineKeyboardButton(text="📅 Расписание", callback_data="schedule_mailing"),
-             InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
+            [InlineKeyboardButton(text="📊 Отчёты", callback_data="show_reports"),  # НОВАЯ КНОПКА
+             InlineKeyboardButton(text="⏱ Авто-стоп", callback_data="autostop_menu")],
+            [InlineKeyboardButton(text="🔔 Упоминания", callback_data="mention_menu"),
+             InlineKeyboardButton(text="📅 Расписание", callback_data="schedule_mailing")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")]
         ])
 
 def get_autostop_kb() -> InlineKeyboardMarkup:

@@ -35,28 +35,32 @@ user_mailing_stats = {}
 user_mailing_tasks = {}
 temp_groups_data = {}
 user_sent_messages = {}
+user_mailing_logs = {}  # NEW: логи отправки по группам
 
 def save_mailing_data():
     data = {
         "user_mailing_settings": user_mailing_settings,
         "user_mailing_stats": user_mailing_stats,
-        "user_sent_messages": user_sent_messages
+        "user_sent_messages": user_sent_messages,
+        "user_mailing_logs": user_mailing_logs
     }
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2, default=str)
 
 def load_mailing_data():
-    global user_mailing_settings, user_mailing_stats, user_sent_messages
+    global user_mailing_settings, user_mailing_stats, user_sent_messages, user_mailing_logs
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             user_mailing_settings = data.get("user_mailing_settings", {})
             user_mailing_stats = data.get("user_mailing_stats", {})
             user_sent_messages = data.get("user_sent_messages", {})
+            user_mailing_logs = data.get("user_mailing_logs", {})
     else:
         user_mailing_settings = {}
         user_mailing_stats = {}
         user_sent_messages = {}
+        user_mailing_logs = {}
 
 def format_time(seconds: int) -> str:
     if seconds < 0:
@@ -167,7 +171,6 @@ def get_signature(user_id: int) -> str:
 # ======= ФУНКЦИИ ДЛЯ РАБОТЫ С СООБЩЕНИЯМИ =======
 def extract_message_data(message: Message) -> dict:
     data = {}
-    # Текст
     if message.text:
         data["text"] = message.text
         data["html_text"] = message.html_text or message.text
@@ -175,7 +178,6 @@ def extract_message_data(message: Message) -> dict:
         data["text"] = ""
         data["html_text"] = ""
 
-    # Если есть caption (для медиа)
     if message.caption:
         data["caption"] = message.caption
         data["html_caption"] = message.caption
@@ -190,7 +192,6 @@ def extract_message_data(message: Message) -> dict:
     data["chat_id"] = message.chat.id
     data["message_id"] = message.message_id
 
-    # Медиа
     if message.photo:
         data["media"] = message.photo[-1].file_id
         data["media_type"] = "photo"
@@ -220,7 +221,6 @@ def extract_message_data(message: Message) -> dict:
 
 async def send_message_to_group(client, group_entity, message_data: dict):
     try:
-        # Если это пересылка
         if message_data.get("is_forward") is True:
             chat_id = message_data.get("chat_id")
             message_id = message_data.get("message_id")
@@ -243,7 +243,6 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                 logger.error(f"❌ Ошибка пересылки: {e}")
                 return False, str(e)
 
-        # === ОБЫЧНАЯ ОТПРАВКА ===
         text = message_data.get("html_text") or message_data.get("text") or ""
         caption = message_data.get("caption") or message_data.get("text") or ""
         if message_data.get("media"):
@@ -253,9 +252,8 @@ async def send_message_to_group(client, group_entity, message_data: dict):
 
         media = message_data.get("media")
         media_type = message_data.get("media_type")
-        buttons = message_data.get("buttons")  # список кортежей (text, value)
+        buttons = message_data.get("buttons")
 
-        # Строим клавиатуру, если есть кнопки
         reply_markup = None
         if buttons:
             keyboard_buttons = []
@@ -267,7 +265,6 @@ async def send_message_to_group(client, group_entity, message_data: dict):
             rows = [KeyboardButtonRow(buttons=keyboard_buttons[i:i+1]) for i in range(0, len(keyboard_buttons), 1)]
             reply_markup = ReplyInlineMarkup(rows=rows)
 
-        # Отправка
         if media:
             if media_type == "photo":
                 await client.send_file(
@@ -356,7 +353,7 @@ async def send_message_to_group(client, group_entity, message_data: dict):
         logger.error(f"❌ Ошибка: {e}", exc_info=True)
         return False, str(e)
 
-# ======= ФУНКЦИЯ РАССЫЛКИ (С ПРОВЕРКОЙ ПОДКЛЮЧЕНИЯ) =======
+# ======= ФУНКЦИЯ РАССЫЛКИ С ЛОГИРОВАНИЕМ =======
 async def mailing_task(user_id: int):
     settings = user_mailing_settings.get(user_id, {})
     stats = user_mailing_stats.get(user_id, {})
@@ -369,7 +366,6 @@ async def mailing_task(user_id: int):
         return
 
     client = sessions[0]
-    # Проверяем и подключаем клиент
     try:
         if not client.is_connected():
             await client.connect()
@@ -412,14 +408,26 @@ async def mailing_task(user_id: int):
         save_mailing_data()
         return
 
-    # Получаем сущности групп
     group_entities = []
     for g in group_ids:
         try:
             entity = await client.get_entity(g['id'])
-            group_entities.append(entity)
+            group_entities.append((entity, g['title']))
         except Exception as e:
             logger.error(f"Не удалось получить сущность группы {g['id']}: {e}")
+            # Логируем ошибку получения сущности
+            if user_id not in user_mailing_logs:
+                user_mailing_logs[user_id] = []
+            user_mailing_logs[user_id].append({
+                "group_id": g['id'],
+                "group_title": g.get('title', 'Неизвестно'),
+                "success": False,
+                "error": f"Не удалось получить сущность: {str(e)}",
+                "timestamp": datetime.now().isoformat(),
+                "cycle": stats.get('completed_cycles', 0) + 1
+            })
+            save_mailing_data()
+
     if not group_entities:
         stats["status"] = "Не удалось получить ни одной группы"
         user_mailing_stats[user_id] = stats
@@ -429,6 +437,7 @@ async def mailing_task(user_id: int):
     interval = settings.get("interval", 5)
     cycle_interval = settings.get("cycle_interval", 5)
     msg_index = 0
+    cycle_counter = 0
 
     try:
         while settings.get("is_active", False):
@@ -437,22 +446,36 @@ async def mailing_task(user_id: int):
                 stats["status"] = "Остановлена по таймеру"
                 break
 
+            cycle_counter += 1
             stats["cycle_start_time"] = datetime.now().isoformat()
             stats["cycle_end_time"] = None
-            for group_entity in group_entities:
+            for entity, title in group_entities:
                 if not settings.get("is_active", False):
                     break
                 current_msg = messages[msg_index % len(messages)]
                 msg_index += 1
 
-                success, error = await send_message_to_group(client, group_entity, current_msg)
+                success, error = await send_message_to_group(client, entity, current_msg)
+                # Логируем результат
+                if user_id not in user_mailing_logs:
+                    user_mailing_logs[user_id] = []
+                user_mailing_logs[user_id].append({
+                    "group_id": entity.id,
+                    "group_title": title,
+                    "success": success,
+                    "error": error if not success else None,
+                    "timestamp": datetime.now().isoformat(),
+                    "cycle": cycle_counter
+                })
+                save_mailing_data()
+
                 if success:
                     stats["sent_today"] += 1
                     stats["sent_total"] += 1
                     stats["current_cycle"] += 1
                     stats["last_cycle_start"] = datetime.now().isoformat()
                 else:
-                    logger.warning(f"Ошибка отправки в группу {group_entity.id}: {error}")
+                    logger.warning(f"Ошибка отправки в группу {entity.id}: {error}")
                 await asyncio.sleep(interval)
 
             stats["completed_cycles"] += 1
@@ -481,6 +504,73 @@ async def mailing_task(user_id: int):
         user_mailing_settings[user_id] = settings
         user_mailing_stats[user_id] = stats
         save_mailing_data()
+
+# ======= ОБРАБОТЧИК ОТЧЁТОВ =======
+@router.callback_query(MailingStates.panel, lambda c: c.data == "show_reports")
+async def show_reports_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+    logs = user_mailing_logs.get(user_id, [])
+    if not logs:
+        await callback.message.edit_text(
+            "📊 Отчёты пока пусты.\nЗапустите рассылку, чтобы начать сбор логов.",
+            reply_markup=get_mailing_panel_kb(user_mailing_settings[user_id].get("is_active", False))
+        )
+        return
+
+    # Показываем последние 10 записей
+    logs.reverse()  # от новых к старым
+    page = 0
+    await show_logs_page(callback, user_id, page)
+
+async def show_logs_page(callback: CallbackQuery, user_id: int, page: int, per_page: int = 10):
+    logs = user_mailing_logs.get(user_id, [])
+    if not logs:
+        await callback.answer("Нет логов", show_alert=True)
+        return
+
+    total = len(logs)
+    start = page * per_page
+    end = min(start + per_page, total)
+    page_logs = logs[start:end]
+
+    text = "📊 <b>Отчёты по группам</b>\n\n"
+    for log in page_logs:
+        status_icon = "✅" if log["success"] else "❌"
+        error_text = f" (ошибка: {log['error']})" if not log["success"] and log["error"] else ""
+        timestamp = datetime.fromisoformat(log["timestamp"]).strftime("%H:%M:%S")
+        text += f"{status_icon} <b>{log['group_title']}</b> – {timestamp}{error_text}\n"
+
+    # Пагинация
+    buttons = []
+    if page > 0:
+        buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"reports_page_{page-1}"))
+    if end < total:
+        buttons.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"reports_page_{page+1}"))
+    nav_row = [buttons] if buttons else []
+
+    kb = InlineKeyboardMarkup(inline_keyboard=nav_row + [
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="reports_refresh")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_panel")]
+    ])
+
+    await callback.message.edit_text(text, reply_markup=kb)
+
+@router.callback_query(lambda c: c.data.startswith("reports_page_"))
+async def reports_page_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+    page = int(callback.data.split("_")[2])
+    await show_logs_page(callback, user_id, page)
+
+@router.callback_query(lambda c: c.data == "reports_refresh")
+async def reports_refresh_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user_id = callback.from_user.id
+    logs = user_mailing_logs.get(user_id, [])
+    if logs:
+        logs.reverse()
+    await show_logs_page(callback, user_id, 0)
 
 # ======= ОСТАЛЬНЫЕ ХЕНДЛЕРЫ =======
 
