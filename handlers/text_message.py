@@ -178,8 +178,7 @@ def extract_message_data(message: Message) -> dict:
     # Если есть caption (для медиа)
     if message.caption:
         data["caption"] = message.caption
-        data["html_caption"] = message.caption  # можно улучшить, но пока просто текст
-        # Если нет текста, но есть caption, используем его как основной текст
+        data["html_caption"] = message.caption
         if not data["text"]:
             data["text"] = message.caption
             data["html_text"] = message.caption
@@ -245,10 +244,8 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                 return False, str(e)
 
         # === ОБЫЧНАЯ ОТПРАВКА ===
-        # Берём текст или caption
         text = message_data.get("html_text") or message_data.get("text") or ""
         caption = message_data.get("caption") or message_data.get("text") or ""
-        # Для медиа используем caption, для текста - text
         if message_data.get("media"):
             final_text = caption
         else:
@@ -267,11 +264,10 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                     keyboard_buttons.append(KeyboardButtonUrl(text=btn_text, url=btn_value))
                 else:
                     keyboard_buttons.append(KeyboardButtonCallback(text=btn_text, data=btn_value.encode()))
-            # Группируем по 1 кнопке в строке (можно изменить)
             rows = [KeyboardButtonRow(buttons=keyboard_buttons[i:i+1]) for i in range(0, len(keyboard_buttons), 1)]
             reply_markup = ReplyInlineMarkup(rows=rows)
 
-        # Выбор метода отправки в зависимости от типа медиа
+        # Отправка
         if media:
             if media_type == "photo":
                 await client.send_file(
@@ -279,7 +275,7 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                     file=media,
                     caption=final_text,
                     parse_mode="html",
-                    reply_markup=reply_markup
+                    buttons=reply_markup
                 )
             elif media_type == "video":
                 await client.send_file(
@@ -287,7 +283,7 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                     file=media,
                     caption=final_text,
                     parse_mode="html",
-                    reply_markup=reply_markup
+                    buttons=reply_markup
                 )
             elif media_type == "document":
                 await client.send_file(
@@ -295,7 +291,7 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                     file=media,
                     caption=final_text,
                     parse_mode="html",
-                    reply_markup=reply_markup
+                    buttons=reply_markup
                 )
             elif media_type == "audio":
                 await client.send_file(
@@ -303,7 +299,7 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                     file=media,
                     caption=final_text,
                     parse_mode="html",
-                    reply_markup=reply_markup
+                    buttons=reply_markup
                 )
             elif media_type == "voice":
                 await client.send_file(
@@ -311,7 +307,7 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                     file=media,
                     caption=final_text,
                     parse_mode="html",
-                    reply_markup=reply_markup
+                    buttons=reply_markup
                 )
             elif media_type == "animation":
                 await client.send_file(
@@ -319,32 +315,30 @@ async def send_message_to_group(client, group_entity, message_data: dict):
                     file=media,
                     caption=final_text,
                     parse_mode="html",
-                    reply_markup=reply_markup
+                    buttons=reply_markup
                 )
             elif media_type == "sticker":
                 await client.send_file(
                     group_entity,
                     file=media,
-                    reply_markup=reply_markup
+                    buttons=reply_markup
                 )
             else:
-                # fallback – отправить как файл
                 await client.send_file(
                     group_entity,
                     file=media,
                     caption=final_text,
                     parse_mode="html",
-                    reply_markup=reply_markup
+                    buttons=reply_markup
                 )
             logger.info(f"✅ Отправлено медиа в группу {group_entity.id}")
         else:
-            # Только текст
             if final_text:
                 await client.send_message(
                     group_entity,
                     message=final_text,
                     parse_mode="html",
-                    reply_markup=reply_markup
+                    buttons=reply_markup
                 )
             else:
                 logger.warning("⚠️ Нет текста и медиа для отправки")
@@ -357,115 +351,12 @@ async def send_message_to_group(client, group_entity, message_data: dict):
         wait_seconds = e.seconds
         logger.warning(f"⏳ FloodWait: ждём {wait_seconds} сек.")
         await asyncio.sleep(wait_seconds)
-        # Повторяем один раз
         return await send_message_to_group(client, group_entity, message_data)
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}", exc_info=True)
         return False, str(e)
 
-async def mailing_task(user_id: int):
-    settings = user_mailing_settings.get(user_id, {})
-    stats = user_mailing_stats.get(user_id, {})
-    sessions = accounts_module.user_sessions.get(user_id, [])
-    if not sessions:
-        stats["status"] = "Нет активной сессии"
-        user_mailing_stats[user_id] = stats
-        save_mailing_data()
-        return
-    client = sessions[0]
-    msg_data = user_sent_messages.get(user_id, {})
-    if not msg_data:
-        stats["status"] = "Нет сохранённого сообщения"
-        user_mailing_stats[user_id] = stats
-        save_mailing_data()
-        return
-
-    is_multiple = isinstance(msg_data, list)
-    if is_multiple and not msg_data:
-        stats["status"] = "Пустой список сообщений"
-        user_mailing_stats[user_id] = stats
-        save_mailing_data()
-        return
-    if not is_multiple:
-        messages = [msg_data]
-    else:
-        messages = msg_data
-
-    group_ids = settings.get("groups_list", [])
-    if not group_ids:
-        stats["status"] = "Не выбраны группы"
-        user_mailing_stats[user_id] = stats
-        save_mailing_data()
-        return
-
-    group_entities = []
-    for g in group_ids:
-        try:
-            entity = await client.get_entity(g['id'])
-            group_entities.append(entity)
-        except Exception as e:
-            logger.error(f"Не удалось получить сущность группы {g['id']}: {e}")
-    if not group_entities:
-        stats["status"] = "Не удалось получить ни одной группы"
-        user_mailing_stats[user_id] = stats
-        save_mailing_data()
-        return
-
-    interval = settings.get("interval", 5)
-    cycle_interval = settings.get("cycle_interval", 5)
-    msg_index = 0
-
-    try:
-        while settings.get("is_active", False):
-            if settings.get("stop_time") and datetime.now() >= settings["stop_time"]:
-                settings["is_active"] = False
-                stats["status"] = "Остановлена по таймеру"
-                break
-
-            stats["cycle_start_time"] = datetime.now().isoformat()
-            stats["cycle_end_time"] = None
-            for group_entity in group_entities:
-                if not settings.get("is_active", False):
-                    break
-                current_msg = messages[msg_index % len(messages)]
-                msg_index += 1
-
-                success, error = await send_message_to_group(client, group_entity, current_msg)
-                if success:
-                    stats["sent_today"] += 1
-                    stats["sent_total"] += 1
-                    stats["current_cycle"] += 1
-                    stats["last_cycle_start"] = datetime.now().isoformat()
-                else:
-                    logger.warning(f"Ошибка отправки в группу {group_entity.id}: {error}")
-                await asyncio.sleep(interval)
-
-            stats["completed_cycles"] += 1
-            stats["current_cycle"] = 0
-            stats["cycle_end_time"] = datetime.now().isoformat()
-            user_mailing_stats[user_id] = stats
-            save_mailing_data()
-
-            if settings.get("is_active", False):
-                await asyncio.sleep(cycle_interval * 60)
-
-        if settings.get("is_active", False):
-            settings["is_active"] = False
-            stats["status"] = "Завершена"
-        else:
-            stats["status"] = "Остановлена пользователем"
-    except asyncio.CancelledError:
-        settings["is_active"] = False
-        stats["status"] = "Остановлена пользователем"
-        raise
-    except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
-        stats["status"] = f"Ошибка: {str(e)}"
-        settings["is_active"] = False
-    finally:
-        user_mailing_settings[user_id] = settings
-        user_mailing_stats[user_id] = stats
-        save_mailing_data()
+# ======= ОСНОВНЫЕ ХЕНДЛЕРЫ =======
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
