@@ -356,7 +356,133 @@ async def send_message_to_group(client, group_entity, message_data: dict):
         logger.error(f"❌ Ошибка: {e}", exc_info=True)
         return False, str(e)
 
-# ======= ОСНОВНЫЕ ХЕНДЛЕРЫ =======
+# ======= ФУНКЦИЯ РАССЫЛКИ (С ПРОВЕРКОЙ ПОДКЛЮЧЕНИЯ) =======
+async def mailing_task(user_id: int):
+    settings = user_mailing_settings.get(user_id, {})
+    stats = user_mailing_stats.get(user_id, {})
+    sessions = accounts_module.user_sessions.get(user_id, [])
+    if not sessions:
+        stats["status"] = "Нет активной сессии"
+        user_mailing_stats[user_id] = stats
+        save_mailing_data()
+        logger.error(f"❌ Нет сессии для пользователя {user_id}")
+        return
+
+    client = sessions[0]
+    # Проверяем и подключаем клиент
+    try:
+        if not client.is_connected():
+            await client.connect()
+            logger.info(f"✅ Клиент подключён для пользователя {user_id}")
+        if not await client.is_user_authorized():
+            stats["status"] = "Клиент не авторизован"
+            user_mailing_stats[user_id] = stats
+            save_mailing_data()
+            logger.error(f"❌ Клиент не авторизован для пользователя {user_id}")
+            return
+    except Exception as e:
+        stats["status"] = f"Ошибка подключения: {str(e)}"
+        user_mailing_stats[user_id] = stats
+        save_mailing_data()
+        logger.error(f"❌ Ошибка подключения клиента: {e}")
+        return
+
+    msg_data = user_sent_messages.get(user_id, {})
+    if not msg_data:
+        stats["status"] = "Нет сохранённого сообщения"
+        user_mailing_stats[user_id] = stats
+        save_mailing_data()
+        return
+
+    is_multiple = isinstance(msg_data, list)
+    if is_multiple and not msg_data:
+        stats["status"] = "Пустой список сообщений"
+        user_mailing_stats[user_id] = stats
+        save_mailing_data()
+        return
+    if not is_multiple:
+        messages = [msg_data]
+    else:
+        messages = msg_data
+
+    group_ids = settings.get("groups_list", [])
+    if not group_ids:
+        stats["status"] = "Не выбраны группы"
+        user_mailing_stats[user_id] = stats
+        save_mailing_data()
+        return
+
+    # Получаем сущности групп
+    group_entities = []
+    for g in group_ids:
+        try:
+            entity = await client.get_entity(g['id'])
+            group_entities.append(entity)
+        except Exception as e:
+            logger.error(f"Не удалось получить сущность группы {g['id']}: {e}")
+    if not group_entities:
+        stats["status"] = "Не удалось получить ни одной группы"
+        user_mailing_stats[user_id] = stats
+        save_mailing_data()
+        return
+
+    interval = settings.get("interval", 5)
+    cycle_interval = settings.get("cycle_interval", 5)
+    msg_index = 0
+
+    try:
+        while settings.get("is_active", False):
+            if settings.get("stop_time") and datetime.now() >= settings["stop_time"]:
+                settings["is_active"] = False
+                stats["status"] = "Остановлена по таймеру"
+                break
+
+            stats["cycle_start_time"] = datetime.now().isoformat()
+            stats["cycle_end_time"] = None
+            for group_entity in group_entities:
+                if not settings.get("is_active", False):
+                    break
+                current_msg = messages[msg_index % len(messages)]
+                msg_index += 1
+
+                success, error = await send_message_to_group(client, group_entity, current_msg)
+                if success:
+                    stats["sent_today"] += 1
+                    stats["sent_total"] += 1
+                    stats["current_cycle"] += 1
+                    stats["last_cycle_start"] = datetime.now().isoformat()
+                else:
+                    logger.warning(f"Ошибка отправки в группу {group_entity.id}: {error}")
+                await asyncio.sleep(interval)
+
+            stats["completed_cycles"] += 1
+            stats["current_cycle"] = 0
+            stats["cycle_end_time"] = datetime.now().isoformat()
+            user_mailing_stats[user_id] = stats
+            save_mailing_data()
+
+            if settings.get("is_active", False):
+                await asyncio.sleep(cycle_interval * 60)
+
+        if settings.get("is_active", False):
+            settings["is_active"] = False
+            stats["status"] = "Завершена"
+        else:
+            stats["status"] = "Остановлена пользователем"
+    except asyncio.CancelledError:
+        settings["is_active"] = False
+        stats["status"] = "Остановлена пользователем"
+        raise
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}")
+        stats["status"] = f"Ошибка: {str(e)}"
+        settings["is_active"] = False
+    finally:
+        user_mailing_settings[user_id] = settings
+        user_mailing_stats[user_id] = stats
+        save_mailing_data()
+
+# ======= ОСТАЛЬНЫЕ ХЕНДЛЕРЫ =======
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
